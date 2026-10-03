@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>輕修｜線上修圖與影片工具</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%235b8cff'/%3E%3Cpath d='M12 5l1.6 4.4L18 11l-4.4 1.6L12 17l-1.6-4.4L6 11l4.4-1.6z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="mode-image">
+<header id="top">
+  <div class="brand"><span class="logo">✦</span>輕修 <small>線上修圖</small></div>
+  <nav class="modes">
+    <button data-mode="image" class="on">圖片修圖</button>
+    <button data-mode="video">影片工具</button>
+  </nav>
+  <div class="spacer"></div>
+  <span id="badge" class="badge" title="AI 運算後端"></span>
+  <div class="grp" id="histGrp">
+    <button id="btnUndo" disabled title="復原 (Ctrl+Z)">↶ 復原</button>
+    <button id="btnRedo" disabled title="重做 (Ctrl+Y)">↷ 重做</button>
+    <button id="btnReset" disabled title="一鍵重置為原圖">⟲ 重置</button>
+    <button id="btnHold" title="按住不放，暫時顯示原圖">👁 按住對比</button>
+  </div>
+  <div id="expWrap">
+    <button id="btnExport" class="primary">匯出</button><button id="btnExpMenu" class="primary caret" title="匯出選項">▾</button>
+    <div id="expMenu" hidden>
+      <label>格式 <select id="expFmt"><option value="png">PNG</option><option value="jpg">JPG</option><option value="webp">WebP</option></select></label>
+      <label id="expQRow" hidden>品質 <input type="range" id="expQ" min="40" max="100" value="92"><b id="expQv">92</b></label>
+    </div>
+  </div>
+</header>
+
+<main id="app">
+  <nav id="toolbar" aria-label="工具"></nav>
+  <aside id="panel"></aside>
+  <section id="stageWrap">
+    <div id="stage">
+      <canvas id="cv"></canvas>
+      <div id="empty">
+        <div class="drop">
+          <div class="big">＋</div>
+          <h2>拖曳圖片或影片到這裡</h2>
+          <p>也可以貼上（Ctrl+V）或</p>
+          <button class="btn primary" id="emptyBtn">選擇檔案</button>
+          <p class="hint">🔒 全程在你的瀏覽器處理，不會上傳到伺服器</p>
+        </div>
+      </div>
+      <button id="cmpClose" hidden>✕ 關閉前後對比</button>
+      <div class="zoomBar"><span id="sizeTxt"></span><button id="zoomOut">－</button><span id="zoomTxt">100%</span><button id="zoomIn">＋</button><button id="btnFit">適合畫面</button></div>
+      <div class="tip">滾輪縮放 · 按住空白鍵拖曳移動</div>
+    </div>
+    <div id="timeline" hidden><button id="tlPlay">▶</button><input type="range" id="tlRange" min="0" max="1000" value="0"><span id="tlTime">0:00.0 / 0:00.0</span></div>
+  </section>
+</main>
+
+<div id="job">
+  <div class="card">
+    <div class="spin"></div>
+    <h2 id="jobTitle">生成中</h2>
+    <p id="jobLabel">準備中…</p>
+    <div class="bar"><i id="jobBar"></i></div>
+    <div class="pct" id="jobPct">0%</div>
+    <button class="btn" id="jobCancel">取消</button>
+    <p class="hint">取消後畫面會維持原樣</p>
+  </div>
+</div>
+<div id="toast"></div>
+<input type="file" id="mainFile" accept="image/*,video/mp4,video/webm" hidden>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

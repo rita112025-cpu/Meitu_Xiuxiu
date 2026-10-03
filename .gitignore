@@ -1,0 +1,14 @@
+# Local backups and downloaded archives
+backup-before-optimized-*/
+*.zip
+
+# Local tooling and caches
+.claude/
+.codex/
+.agents/
+__pycache__/
+*.pyc
+
+# Operating system files
+Thumbs.db
+.DS_Store

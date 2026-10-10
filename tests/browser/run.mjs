@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 // PAGE_TESTS 只能指定 tests/browser/ 內的 .js 檔名，不接受路徑或 ../（在啟動瀏覽器前檢查）
 const SUITE = process.env.PAGE_TESTS || 'page-tests.js';
+const DEBUG = !!process.env.DEBUG; // 設定 DEBUG=1 才輸出頁面的除錯紀錄
 if (!/^[A-Za-z0-9_-]+\.js$/.test(SUITE)) {
   console.error('PAGE_TESTS 只允許 tests/browser/ 內的 .js 檔名，收到：' + SUITE);
   process.exit(2);
@@ -67,7 +68,7 @@ try {
   const pending = new Map();
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
-    if (msg.method === 'Runtime.consoleAPICalled') console.log('[page]', msg.params.args.map((a) => a.value ?? a.description).join(' '));
+    if (DEBUG && msg.method === 'Runtime.consoleAPICalled') console.log('[page]', msg.params.args.map((a) => a.value ?? a.description).join(' '));
     if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
   };
   const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
@@ -83,7 +84,7 @@ try {
 
   const only = process.argv[2];
   const src = await readFile(path.join(ROOT, 'tests/browser', SUITE), 'utf8');
-  const expr = `(${src})(${JSON.stringify(only || '')})`;
+  const expr = `(${src})(${JSON.stringify(only || '')}, ${DEBUG})`;
   const res = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, timeout: 600000 });
   if (res.result?.exceptionDetails || res.result?.result?.subtype === 'error') {
     throw new Error('頁面測試執行失敗：' + (res.result?.exceptionDetails?.exception?.description || JSON.stringify(res.result?.result)));

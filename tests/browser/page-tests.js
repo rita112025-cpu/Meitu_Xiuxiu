@@ -1,21 +1,22 @@
 // 在真實頁面（index.html）中執行的測試。由 run.mjs 以 Runtime.evaluate 注入執行。
 // 影音測試使用瀏覽器內即時產生的合成素材，並呼叫真實的 WebCodecs 編碼，不以 mock 取代輸出驗證。
-(async (only) => {
+(async (only, debug) => {
   const results = [];
+  const log = (...a) => { if (debug) console.log(...a); }; // 除錯輸出只在 DEBUG=1 時開啟，不影響結果
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const withTimeout = (p, ms, label) => Promise.race([p, sleep(ms).then(() => { throw new Error(`${label} 逾時 ${ms}ms`); })]);
   const check = (cond, msg) => { if (!cond) throw new Error(msg); };
   const CANNOT = (detail) => ({ status: 'CANNOT_VERIFY', detail });
   const run = async (name, fn) => {
     if (only && !name.startsWith(only)) return;
-    console.log("[start] " + name);
+    log('[start] ' + name);
     try {
       const r = await fn();
       results.push({ name, status: r?.status || 'PASS', detail: r?.detail || '' });
-      console.log('[done] ' + (r?.status || 'PASS') + ' ' + name + ' ' + (r?.detail || ''));
+      log('[done] ' + (r?.status || 'PASS') + ' ' + name + ' ' + (r?.detail || ''));
     } catch (e) {
       results.push({ name, status: 'FAIL', detail: String(e?.message || e) });
-      console.log('[done] FAIL ' + name + ' ' + (e?.message || e));
+      log('[done] FAIL ' + name + ' ' + (e?.message || e));
     }
   };
 
@@ -115,34 +116,51 @@
   });
 
   // ---------- 3. runJob 取消與搶佔 ----------
-  await run('runJob：取消後立即返回，且舊工作不能覆寫新工作的進度框與結果', async () => {
-    let releaseA, progressA;
-    const pA = core.runJob('A', ({ progress }) => { progressA = progress; return new Promise((r) => { releaseA = r; }); });
+  await run('runJob：工作進行中拒絕新工作，新函式不執行、進度與標題不變', async () => {
+    let releaseA;
+    const pA = core.runJob('A', () => new Promise((r) => { releaseA = r; }));
     await sleep(20);
-    $('#jobCancel').click(); // 取消 A
-    const rA = await withTimeout(pA, 500, '取消後的 runJob');
-    check(rA === null, 'A 取消後應回傳 null');
-
-    let releaseB;
-    const pB = core.runJob('B', () => new Promise((r) => { releaseB = r; }));
-    await sleep(20);
-    releaseA('A-stale-result'); // 舊工作底層仍在執行，最後才完成
-    progressA(0.9, 'A-stale-label');
-    await sleep(30);
-    check($('#job').classList.contains('show'), '舊工作收尾時把新工作的進度框隱藏了');
-    check($('#jobTitle').textContent === 'B', '舊工作改寫了新工作的標題');
-    check($('#jobLabel').textContent !== 'A-stale-label', '舊工作的進度覆寫了新工作');
-    releaseB('B-result');
-    check((await withTimeout(pB, 500, 'B')) === 'B-result', 'B 結果錯誤');
-    await waitFor(() => !$('#job').classList.contains('show'), 2000, '進度框隱藏');
+    const labelBefore = $('#jobLabel').textContent;
+    let ran = false;
+    const rB = await withTimeout(core.runJob('B', () => { ran = true; return 'B'; }), 500, '被拒絕的 runJob');
+    check(rB === null, '被拒絕的工作應回傳 null');
+    check(!ran, '被拒絕的工作函式不應執行');
+    check($('#jobTitle').textContent === 'A', '標題被新請求改寫');
+    check($('#jobLabel').textContent === labelBefore, '進度被新請求改寫');
+    check($('#toast').textContent.includes('目前有工作進行中'), '未顯示忙碌提示');
+    releaseA('A-result');
+    check((await withTimeout(pA, 500, 'A')) === 'A-result', 'A 應正常完成');
   });
 
-  await run('runJob：新工作開始時中止仍在進行的舊工作（舊結果不回寫）', async () => {
-    const pOld = core.runJob('old', () => new Promise(() => {}));
+  await run('runJob：Cancel 只中止目前工作；UI 立即返回，底層未結束前拒絕新工作，結束後可重啟', async () => {
+    let releaseA, progressA;
+    const pA = core.runJob('A', ({ progress }) => { progressA = progress; return new Promise((r) => { releaseA = r; }); }); // 忽略 signal
     await sleep(20);
-    const pNew = core.runJob('new', async () => 'NEW');
-    check((await withTimeout(pOld, 500, '舊工作')) === null, '舊工作應回傳 null');
-    check((await withTimeout(pNew, 500, '新工作')) === 'NEW', '新工作結果錯誤');
+    $('#jobCancel').click();
+    check((await withTimeout(pA, 500, '取消後的 runJob')) === null, 'A 取消後應回傳 null');
+    check(!$('#job').classList.contains('show'), 'UI 應立即隱藏');
+    progressA(0.9, 'A-stale-label'); // 底層仍在執行，但 UI 已返回，不應寫入
+    check($('#jobLabel').textContent !== 'A-stale-label', 'UI 返回後舊工作仍改寫進度');
+    let ranC = false;
+    const rC = await core.runJob('C', () => { ranC = true; return 'C'; });
+    check(rC === null && !ranC, '底層未結束時新工作應被拒絕且不執行');
+    releaseA('late');
+    await sleep(20);
+    check((await withTimeout(core.runJob('D', async () => 'D'), 500, 'D')) === 'D', '底層結束後應可重新啟動');
+  });
+
+  await run('runJob：完成、失敗、取消三條路徑之後都能重新啟動', async () => {
+    check((await core.runJob('ok', async () => 1)) === 1, '完成路徑');
+    await sleep(20);
+    check((await core.runJob('fail', async () => { throw new Error('boom'); })) === null, '失敗路徑應回傳 null');
+    check($('#toast').textContent.includes('處理失敗'), '失敗路徑未顯示錯誤提示');
+    await sleep(20);
+    const pC = core.runJob('cancel', ({ signal }) => new Promise((_, rej) => signal.addEventListener('abort', () => rej(new DOMException('Aborted', 'AbortError')))));
+    await sleep(20);
+    $('#jobCancel').click();
+    check((await withTimeout(pC, 500, '取消路徑')) === null, '取消路徑應回傳 null');
+    await sleep(20);
+    check((await core.runJob('after', async () => 'again')) === 'again', '取消後無法重新啟動');
   });
 
   await run('模型退回：發出事件後以 toast 告知使用者', async () => {

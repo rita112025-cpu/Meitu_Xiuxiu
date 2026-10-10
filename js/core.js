@@ -31,35 +31,47 @@ export function toast(msg, bad) {
 addEventListener('xiuxiu:model-fallback', (e) => toast(`${e.detail?.from ?? '模型'} 無法使用，已改用 ${e.detail?.to ?? '備用模型'}（品質可能較低）`, true));
 
 // ---------- AI 工作：生成中 + 進度 + 取消 ----------
-// 同一時間只有一個工作擁有進度框與結果。新工作開始時中止舊工作；舊工作之後的進度、提示、收尾都會被忽略
-let activeJob = null;
+// 單一工作鎖：底層工作（fn）真正結束前不允許啟動新工作，避免資源衝突。
+// 工作進行中收到新請求會被拒絕（不執行 fn、不改動進度）。只有使用者按取消才會中止目前工作；
+// UI 會立即返回，但鎖要等底層 fn 結束才釋放。
+let jobBusy = false;
 export async function runJob(title, fn) {
+  if (jobBusy) { toast('目前有工作進行中，請完成或取消後再試', true); return null; }
+  jobBusy = true;
   const ac = new AbortController();
-  activeJob?.abort();
-  activeJob = ac;
-  const isCurrent = () => activeJob === ac;
   const box = $('#job');
-  $('#jobTitle', box).textContent = title;
+  let uiOpen = true; // UI 返回後，舊工作的進度不再寫入畫面
   const setP = (p, label) => {
-    if (!isCurrent()) return;
+    if (!uiOpen) return;
     if (label) $('#jobLabel', box).textContent = label;
     if (p != null) { $('#jobBar', box).style.width = Math.round(clamp(p, 0, 1) * 100) + '%'; $('#jobPct', box).textContent = Math.round(clamp(p, 0, 1) * 100) + '%'; }
   };
+  $('#jobTitle', box).textContent = title;
   setP(0, '準備中…');
   box.classList.add('show');
-  $('#jobCancel', box).onclick = () => { ac.abort(); $('#jobLabel', box).textContent = '正在取消…'; };
-  // 取消後立即返回，不等待底層仍在執行的步驟（例如 ORT 推論無法中斷）；其結果會被丟棄
+  $('#jobCancel', box).onclick = () => {
+    if (!uiOpen || ac.signal.aborted) return;
+    ac.abort();
+    $('#jobLabel', box).textContent = '正在取消…';
+  };
+  // 取消後立即返回，不等待底層仍在執行的步驟（例如 ORT 推論無法中斷）
   const aborted = new Promise((_, rej) => ac.signal.addEventListener('abort', () => rej(new DOMException('Aborted', 'AbortError')), { once: true }));
   aborted.catch(() => {});
+  const work = Promise.resolve().then(() => fn({ signal: ac.signal, progress: setP }));
+  // 底層工作真正結束（完成、失敗或取消後清理完）才釋放鎖
+  const release = () => { jobBusy = false; };
+  work.then(release, release);
   try {
-    const r = await Promise.race([fn({ signal: ac.signal, progress: setP }), aborted]);
-    if (ac.signal.aborted) { if (isCurrent()) toast('已取消，畫面維持原樣'); return null; }
+    const r = await Promise.race([work, aborted]);
+    if (ac.signal.aborted) { toast('已取消，畫面維持原樣'); return null; }
     return r;
   } catch (e) {
-    if (e?.name === 'AbortError' || ac.signal.aborted) { if (isCurrent()) toast('已取消，畫面維持原樣'); return null; }
-    console.error(e); if (isCurrent()) toast('處理失敗：' + (e?.message || e), true); return null;
+    if (e?.name === 'AbortError' || ac.signal.aborted) { toast('已取消，畫面維持原樣'); return null; }
+    console.error(e); toast('處理失敗：' + (e?.message || e), true); return null;
   } finally {
-    if (isCurrent()) { activeJob = null; box.classList.remove('show'); }
+    uiOpen = false;
+    box.classList.remove('show');
+    $('#jobCancel', box).onclick = null;
   }
 }
 

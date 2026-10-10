@@ -190,6 +190,82 @@
     check(maskAlphaAt(120, 100) === 0, '成功套用後遮罩未清理');
   });
 
+  // ---------- 編輯狀態：Undo/Redo/Reset、取消、過期結果、重複操作 ----------
+  const boxHidden = async () => {
+    try { await waitFor(() => !$('#job').classList.contains('show'), 60000, '進度框隱藏'); }
+    catch (e) { throw new Error(`${e.message}；目前進度「${$('#jobLabel').textContent}」，提示「${$('#toast').textContent}」`); }
+  };
+  const eraseMaskAlphaAt = (x, y) => {
+    const real = document.createElement('canvas'); real.width = 320; real.height = 200;
+    const g = real.getContext('2d');
+    S.tool.overlay(g, 1);
+    return g.getImageData(x, y, 1, 1).data[3];
+  };
+  const cropTo160x100 = async () => {
+    main.selectTool('adjust');
+    S.tool.leave(); S.tool.enter(); S.tool.leave();
+    S.tool.down({ x: 40, y: 20 }); S.tool.move({ x: 200, y: 120 }); S.tool.up();
+    $('#aCrop').click();
+    check(S.doc.width === 160, '前置裁切未生效');
+  };
+
+  await run('編輯狀態：AI 工作執行期間 Undo 被拒絕，畫面與歷史不變', async () => {
+    await openPattern(320, 200);
+    await cropTo160x100();
+    const docBefore = S.doc, histBefore = S.hist.length;
+    let release;
+    const blocker = core.runJob('blocker', () => new Promise((r) => { release = r; }));
+    await sleep(20);
+    try {
+      $('#btnUndo').click();
+      await sleep(30);
+      check(S.doc === docBefore && S.hist.length === histBefore, 'AI 工作執行中 Undo 改動了畫面或歷史');
+    } finally {
+      release('done'); // 無論斷言成敗都要釋放工作鎖，避免影響後續測試
+      await blocker;
+      await boxHidden();
+    }
+  });
+
+  await run('編輯狀態：消除期間畫面已被其他操作改變，過期的消除結果不得覆寫較新的畫面', async () => {
+    await openPattern(320, 200);
+    main.selectTool('erase');
+    S.tool.down({ x: 100, y: 80 }); S.tool.move({ x: 140, y: 120 }); S.tool.up(); // 啟動消除
+    const newer = document.createElement('canvas'); newer.width = 160; newer.height = 100;
+    core.commit(newer); // 工作進行中，另一個操作改變了畫面
+    await boxHidden();
+    await sleep(30);
+    check(S.doc === newer, '過期的消除結果覆寫了較新的畫面');
+  });
+
+  await run('編輯狀態：消除取消後，原圖、歷史與遮罩保持一致', async () => {
+    await openPattern(320, 200);
+    main.selectTool('erase');
+    const docBefore = S.doc, histBefore = S.hist.length;
+    S.tool.down({ x: 100, y: 80 }); S.tool.move({ x: 140, y: 120 }); S.tool.up();
+    $('#jobCancel').click();
+    await boxHidden();
+    await sleep(60);
+    check(S.doc === docBefore && S.hist.length === histBefore, '取消後原圖或歷史被改動');
+    check(eraseMaskAlphaAt(120, 100) > 0, '取消後遮罩被清空，使用者的框選遺失');
+  });
+
+  await run('編輯狀態：消除工作執行中再次框選（重複操作）只產生一筆歷史', async () => {
+    await openPattern(320, 200);
+    main.selectTool('erase');
+    const histBefore = S.hist.length;
+    S.tool.down({ x: 100, y: 80 }); S.tool.move({ x: 140, y: 120 }); S.tool.up();
+    S.tool.down({ x: 150, y: 90 }); S.tool.move({ x: 170, y: 110 }); S.tool.up(); // 重複操作，應被忽略
+    await boxHidden();
+    await sleep(30);
+    check(S.hist.length === histBefore + 1, `重複操作產生了 ${S.hist.length - histBefore} 筆歷史`);
+  });
+
+  await run('編輯狀態：消除工作失敗時無法在測試中注入（CANNOT_VERIFY）', async () => ({
+    status: 'CANNOT_VERIFY',
+    detail: '無法在不替換模組的情況下注入 AI 推論失敗；失敗路徑與 runJob 失敗路徑共用 null 回傳，已由 runJob 失敗測試覆蓋',
+  }));
+
   await run('模型退回：發出事件後以 toast 告知使用者', async () => {
     window.dispatchEvent(new CustomEvent('xiuxiu:model-fallback', { detail: { from: 'RVM 影片摳圖', to: 'U²-Net（輕量）' } }));
     await sleep(30);

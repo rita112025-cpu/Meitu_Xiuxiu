@@ -223,9 +223,11 @@ export function commit(canvas) {
   S.redo = []; S.doc = canvas; S.compare = null; afterDocChange();
 }
 export function setCompare(before) { S.compare = { before, pos: 0.5 }; refreshHist(); render(); }
-export function undo() { if (!S.hist.length) return; S.redo.push(S.doc); S.doc = S.hist.pop(); S.compare = null; afterDocChange(); }
-export function redo() { if (!S.redo.length) return; S.hist.push(S.doc); trimHistory(); S.doc = S.redo.pop(); S.compare = null; afterDocChange(); }
-export function resetAll() { if (!S.orig || S.mode !== 'image') return; commit(clone(S.orig)); toast('已重置為原圖（可復原）'); }
+// AI 工作進行中時不允許復原、重做或重置：工作完成後會套用它開始時的畫面，中途改動會讓結果錯置
+const jobBlocked = () => { if (!jobBusy) return false; toast('AI 工作進行中，請等待完成或取消後再試', true); return true; };
+export function undo() { if (jobBlocked() || !S.hist.length) return; S.redo.push(S.doc); S.doc = S.hist.pop(); S.compare = null; afterDocChange(); }
+export function redo() { if (jobBlocked() || !S.redo.length) return; S.hist.push(S.doc); trimHistory(); S.doc = S.redo.pop(); S.compare = null; afterDocChange(); }
+export function resetAll() { if (jobBlocked() || !S.orig || S.mode !== 'image') return; commit(clone(S.orig)); toast('已重置為原圖（可復原）'); }
 
 $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo; $('#btnReset').onclick = resetAll;
 $('#btnFit').onclick = fit;

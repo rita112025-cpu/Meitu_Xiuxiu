@@ -1,9 +1,11 @@
 name: CI
 
-# 只在 Pull Request 觸發。不使用任何 secret 或 API Key。
+# 在 Pull Request 與推送到 main 時觸發。不使用任何 secret 或 API Key。
 # 不執行 AI 模型下載與真實推論（需要連網下載模型，不納入一般 CI）。
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read

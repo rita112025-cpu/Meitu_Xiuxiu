@@ -22,11 +22,20 @@ if not defined PORT (
 
 set "URL=http://127.0.0.1:%PORT%/"
 echo Qingxiu is running at %URL%
-echo Your default browser will open automatically. Close this window when done.
+echo Your browser will open automatically. Close this window when done.
 echo.
 
-rem Start the browser after the HTTP server has had a moment to bind.
-start "" powershell -NoProfile -WindowStyle Hidden -Command "Start-Sleep -Milliseconds 700; Start-Process '%URL%'"
+rem Browser preference: Chrome, then Edge, then the system default browser.
+set "BROWSER="
+for %%K in (HKLM HKCU) do if not defined BROWSER reg query "%%K\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe" >nul 2>nul && set "BROWSER=chrome"
+if not defined BROWSER reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe" >nul 2>nul && set "BROWSER=msedge"
+
+rem Open the browser after the server has had a moment to bind (same approach as coffe_shop/start.bat).
+if defined BROWSER (
+  start "" /b cmd /c "timeout /t 2 /nobreak >nul & start %BROWSER% %URL%"
+) else (
+  start "" /b cmd /c "timeout /t 2 /nobreak >nul & start %URL%"
+)
 
 %PY% -m http.server %PORT% --bind 127.0.0.1
 set "RC=%ERRORLEVEL%"

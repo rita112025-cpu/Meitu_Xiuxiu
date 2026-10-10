@@ -42,6 +42,15 @@ export async function loadVideo(file) {
     URL.revokeObjectURL(url);
     throw e;
   }
+  if (!Number.isFinite(video.duration)) {
+    // 部分 WebM（例如 MediaRecorder 產生的）沒有時長資訊：跳到極大時間，讓瀏覽器算出實際長度後再回到開頭
+    video.currentTime = 1e101;
+    await new Promise((res) => {
+      const t = setTimeout(res, 5000);
+      video.addEventListener('durationchange', () => { clearTimeout(t); res(); }, { once: true });
+    });
+    if (Number.isFinite(video.duration)) await seek(video, 0);
+  }
   const V = { file, url, video, w: video.videoWidth, h: video.videoHeight, dur: video.duration, fps: 30 };
   // 估算影格率
   if (video.requestVideoFrameCallback) {
@@ -97,6 +106,7 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
   outW &= ~1; outH &= ~1;
   const isMp4 = format === 'mp4', total = Math.max(1, Math.floor(V.dur * fps)), big = Math.max(outW, outH) > 1920;
   if (alpha && isMp4) throw new Error('透明背景只能輸出 WebM');
+  if (!Number.isFinite(V.dur) || V.dur <= 0) throw new Error('無法取得影片長度，無法輸出');
   const mod = alpha ? await loadWebmMuxerWithAlpha() : await import(MUX[format]);
   const vcfg = {
     codec: isMp4 ? (big ? 'avc1.640034' : 'avc1.64002A') : (big ? 'vp09.00.51.08' : 'vp09.00.40.08'),
@@ -114,7 +124,8 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
 
   const target = new mod.ArrayBufferTarget();
   const mo = { target, video: isMp4 ? { codec: 'avc', width: outW, height: outH } : { codec: 'V_VP9', width: outW, height: outH, frameRate: fps, alpha: !!alpha } };
-  if (audio) mo.audio = { codec: isMp4 ? 'aac' : 'opus', numberOfChannels: ach, sampleRate: audio.sampleRate };
+  // webm-muxer 會把 codec 字串原樣寫入 Matroska CodecID，必須使用 'A_OPUS'（寫成 'opus' 時瀏覽器無法播放該音軌）
+  if (audio) mo.audio = { codec: isMp4 ? 'aac' : 'A_OPUS', numberOfChannels: ach, sampleRate: audio.sampleRate };
   if (isMp4) mo.fastStart = 'in-memory';
   const muxer = new mod.Muxer(mo);
 

@@ -27,12 +27,21 @@ export function toast(msg, bad) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = ''), bad ? 5000 : 2600);
 }
 
+// AI 模型退回備用模型時通知使用者（ai.js 發出事件，不直接依賴 DOM）
+addEventListener('xiuxiu:model-fallback', (e) => toast(`${e.detail?.from ?? '模型'} 無法使用，已改用 ${e.detail?.to ?? '備用模型'}（品質可能較低）`, true));
+
 // ---------- AI 工作：生成中 + 進度 + 取消 ----------
+// 同一時間只有一個工作擁有進度框與結果。新工作開始時中止舊工作；舊工作之後的進度、提示、收尾都會被忽略
+let activeJob = null;
 export async function runJob(title, fn) {
   const ac = new AbortController();
+  activeJob?.abort();
+  activeJob = ac;
+  const isCurrent = () => activeJob === ac;
   const box = $('#job');
   $('#jobTitle', box).textContent = title;
   const setP = (p, label) => {
+    if (!isCurrent()) return;
     if (label) $('#jobLabel', box).textContent = label;
     if (p != null) { $('#jobBar', box).style.width = Math.round(clamp(p, 0, 1) * 100) + '%'; $('#jobPct', box).textContent = Math.round(clamp(p, 0, 1) * 100) + '%'; }
   };
@@ -44,12 +53,14 @@ export async function runJob(title, fn) {
   aborted.catch(() => {});
   try {
     const r = await Promise.race([fn({ signal: ac.signal, progress: setP }), aborted]);
-    if (ac.signal.aborted) { toast('已取消，畫面維持原樣'); return null; }
+    if (ac.signal.aborted) { if (isCurrent()) toast('已取消，畫面維持原樣'); return null; }
     return r;
   } catch (e) {
-    if (e?.name === 'AbortError' || ac.signal.aborted) { toast('已取消，畫面維持原樣'); return null; }
-    console.error(e); toast('處理失敗：' + (e?.message || e), true); return null;
-  } finally { box.classList.remove('show'); }
+    if (e?.name === 'AbortError' || ac.signal.aborted) { if (isCurrent()) toast('已取消，畫面維持原樣'); return null; }
+    console.error(e); if (isCurrent()) toast('處理失敗：' + (e?.message || e), true); return null;
+  } finally {
+    if (isCurrent()) { activeJob = null; box.classList.remove('show'); }
+  }
 }
 
 // ---------- 渲染 ----------

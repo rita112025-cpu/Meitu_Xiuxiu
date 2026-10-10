@@ -74,14 +74,36 @@ async function loadSession(key, { onProgress, signal }) {
   return entry;
 }
 
-// 同一模型的並行呼叫共用同一個載入 Promise；失敗後移除，讓下一次呼叫可以重試。
-// 注意：共用的載入只受發起者的 signal 控制。
+// 同一模型的並行呼叫共用同一個載入。每個呼叫者只會因自己的 signal 取消；
+// 只有所有呼叫者都取消時，共用的載入才會被中止。失敗後移除，讓下一次呼叫可以重試。
 export async function getSession(key, { onProgress, signal } = {}) {
   if (sessions.has(key)) return sessions.get(key);
-  if (!loading.has(key)) {
-    loading.set(key, loadSession(key, { onProgress, signal }).finally(() => loading.delete(key)));
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  let job = loading.get(key);
+  if (!job) {
+    const ctl = new AbortController();
+    job = { ctl, waiters: 0 };
+    job.promise = (async () => {
+      try { return await loadSession(key, { onProgress, signal: ctl.signal }); }
+      finally { if (loading.get(key) === job) loading.delete(key); }
+    })();
+    loading.set(key, job);
   }
-  return loading.get(key);
+  job.waiters++;
+  return new Promise((res, rej) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true; job.waiters--;
+      if (job.waiters === 0) job.ctl.abort(); // 最後一個呼叫者離開，才真正中止下載
+      rej(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    job.promise.then(
+      (v) => { if (!settled) { settled = true; job.waiters--; signal?.removeEventListener('abort', onAbort); res(v); } },
+      (e) => { if (!settled) { settled = true; job.waiters--; signal?.removeEventListener('abort', onAbort); rej(e); } },
+    );
+  });
 }
 
 // 執行推論；WebGPU 執行失敗時自動退回 WASM 重試一次
@@ -281,7 +303,13 @@ function f16ToF32(src) {
 export async function createVideoMatter({ signal, onProgress, longSide = 768 } = {}) {
   let engine = 'rvm';
   try { await getSession('rvm', { signal, onProgress }); }
-  catch (e) { if (e.name === 'AbortError') throw e; console.warn('RVM 無法使用，改用 U²-Net-p', e); engine = 'u2netp'; await getSession('u2netp', { signal, onProgress }); }
+  catch (e) {
+    if (e.name === 'AbortError') throw e;
+    console.warn('RVM 無法使用，改用 U²-Net-p', e);
+    engine = 'u2netp';
+    globalThis.dispatchEvent?.(new CustomEvent('xiuxiu:model-fallback', { detail: { from: 'RVM 影片摳圖', to: 'U²-Net（輕量）' } }));
+    await getSession('u2netp', { signal, onProgress });
+  }
   let state = null;
   const ort = await getOrt();
   const zero = () => new ort.Tensor('float16', new Uint16Array(1), [1, 1, 1, 1]);

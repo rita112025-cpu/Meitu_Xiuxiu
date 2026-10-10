@@ -32,3 +32,32 @@ test('模型下載失敗會回報狀態碼，且之後可以重新嘗試', { tim
   globalThis.fetch = savedFetch;
   assert.equal(calls.length, 2, '第二次呼叫應重新發出下載請求');
 });
+
+test('兩個呼叫者共用載入時，其中一個取消不會中止另一個', { timeout: 5000 }, async () => {
+  const calls = stubFetch(() => new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+  const ac = new AbortController();
+  const a = getSession('art', { signal: ac.signal });
+  const b = getSession('art');
+  ac.abort();
+  const [ra, rb] = await Promise.allSettled([a, b]);
+  globalThis.fetch = savedFetch;
+  assert.equal(ra.status, 'rejected');
+  assert.equal(ra.reason.name, 'AbortError', '取消的呼叫者應收到 AbortError');
+  assert.equal(rb.status, 'rejected');
+  assert.notEqual(rb.reason.name, 'AbortError', '未取消的呼叫者不應收到 AbortError（應是測試環境無 CDN 的載入錯誤）');
+  assert.equal(calls.filter((u) => u === MODELS.art.url).length, 1, '共用的載入只下載一次');
+});
+
+test('所有呼叫者都取消時，共用的下載會被中止', { timeout: 5000 }, async () => {
+  let aborted = false;
+  globalThis.fetch = (url, opts) => new Promise((_, rej) => {
+    opts.signal.addEventListener('abort', () => { aborted = true; rej(new DOMException('Aborted', 'AbortError')); });
+  });
+  const ac = new AbortController();
+  const p = getSession('std2', { signal: ac.signal });
+  ac.abort();
+  await assert.rejects(p, { name: 'AbortError' });
+  await new Promise((r) => setTimeout(r, 10));
+  globalThis.fetch = savedFetch;
+  assert.equal(aborted, true, '最後一個呼叫者取消後，底層 fetch 應被中止');
+});

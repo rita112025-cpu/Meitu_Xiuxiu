@@ -61,3 +61,9 @@ test('所有呼叫者都取消時，共用的下載會被中止', { timeout: 500
   globalThis.fetch = savedFetch;
   assert.equal(aborted, true, '最後一個呼叫者取消後，底層 fetch 應被中止');
 });
+
+test('模型網址固定為 commit SHA，不使用浮動的 main', () => {
+  for (const [key, m] of Object.entries(MODELS)) {
+    assert.match(m.url, /\/resolve\/[0-9a-f]{40}\//, `${key} 應使用 40 碼 commit SHA`);
+  }
+});

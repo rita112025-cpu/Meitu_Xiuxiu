@@ -3,15 +3,15 @@ const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 const HF = 'https://huggingface.co/';
 
 export const MODELS = {
-  migan: { name: 'MI-GAN', url: HF + 'anyisalin/migan-onnx/resolve/main/onnx/migan_pipeline.onnx', size: 28 },
-  u2net: { name: 'U²-Net', url: HF + 'Heliosoph/u2net-onnx/resolve/main/u2net.onnx', size: 176 },
-  u2netp: { name: 'U²-Net (輕量)', url: HF + 'Heliosoph/u2net-onnx/resolve/main/u2netp.onnx', size: 5 },
-  rvm: { name: 'RVM 影片摳圖', url: HF + 'inverseaibd/rvm_mobilenetv3_fp16/resolve/main/rvm_mobilenetv3_fp16.onnx', size: 8 },
+  migan: { name: 'MI-GAN', url: HF + 'anyisalin/migan-onnx/resolve/a8be381d5206abb962386d8ef4bd6e08363bb520/onnx/migan_pipeline.onnx', size: 28 },
+  u2net: { name: 'U²-Net', url: HF + 'Heliosoph/u2net-onnx/resolve/7fc34deee10329bc039c10a73b98090d0c6f5c59/u2net.onnx', size: 176 },
+  u2netp: { name: 'U²-Net (輕量)', url: HF + 'Heliosoph/u2net-onnx/resolve/7fc34deee10329bc039c10a73b98090d0c6f5c59/u2netp.onnx', size: 5 },
+  rvm: { name: 'RVM 影片摳圖', url: HF + 'inverseaibd/rvm_mobilenetv3_fp16/resolve/fc453688f604d0896e12f48df578fdd69ea2b4ac/rvm_mobilenetv3_fp16.onnx', size: 8 },
   // 放大模型。tile 為單次推論的圖塊大小
-  fast: { name: 'Real-ESRGAN 快速', url: HF + 'Heliosoph/realesrgan-onnx/resolve/main/realesr-general-x4v3.onnx', size: 5, scale: 4, tile: 256 },
-  std4: { name: 'Upscayl 標準 ×4', url: HF + 'SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x4.onnx', size: 67, scale: 4, tile: 160 },
-  std2: { name: 'Upscayl 標準 ×2', url: HF + 'SceneWorks/real-esrgan-onnx/resolve/main/real_esrgan_x2.onnx', size: 67, scale: 2, tile: 224 },
-  art: { name: 'Upscayl 數位藝術', url: HF + 'RekluzLabs/realesrgan_anime6b.onnx/resolve/main/realesrgan_anime6b.onnx', size: 18, scale: 4, tile: 192 },
+  fast: { name: 'Real-ESRGAN 快速', url: HF + 'Heliosoph/realesrgan-onnx/resolve/488e5dda07333179f229a6205d92135eea4c25e9/realesr-general-x4v3.onnx', size: 5, scale: 4, tile: 256 },
+  std4: { name: 'Upscayl 標準 ×4', url: HF + 'SceneWorks/real-esrgan-onnx/resolve/09f741bac80a246b407da3ee902bf5f3291b602f/real_esrgan_x4.onnx', size: 67, scale: 4, tile: 160 },
+  std2: { name: 'Upscayl 標準 ×2', url: HF + 'SceneWorks/real-esrgan-onnx/resolve/09f741bac80a246b407da3ee902bf5f3291b602f/real_esrgan_x2.onnx', size: 67, scale: 2, tile: 224 },
+  art: { name: 'Upscayl 數位藝術', url: HF + 'RekluzLabs/realesrgan_anime6b.onnx/resolve/d5377ec6204295bca15f0a7967579dc5e25e2ae6/realesrgan_anime6b.onnx', size: 18, scale: 4, tile: 192 },
 };
 
 export const hasGPU = typeof navigator !== 'undefined' && !!navigator.gpu;

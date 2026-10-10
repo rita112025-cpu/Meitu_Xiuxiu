@@ -45,22 +45,50 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 const profile = await mkdtemp(path.join(tmpdir(), 'xiuxiu-chrome-'));
-const port = 9300 + Math.floor(Math.random() * 500);
+// Chrome 的輸出保留下來，連線失敗時才能看到真正原因
+const chromeOutput = [];
+let chromeOutputSize = 0;
+const keepOutput = (chunk) => {
+  chromeOutput.push(chunk.toString());
+  chromeOutputSize += chunk.length;
+  while (chromeOutputSize > 20000 && chromeOutput.length > 1) chromeOutputSize -= chromeOutput.shift().length;
+};
+const chromeLog = () => chromeOutput.join('').slice(-4000);
+let chromeExit = null;
 const proc = spawn(chrome, [
-  '--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
+  '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
   '--no-first-run', '--no-default-browser-check', '--autoplay-policy=no-user-gesture-required',
   '--disable-gpu', ...(process.env.CI ? ['--no-sandbox'] : []), 'about:blank',
-], { stdio: 'ignore' });
+], { stdio: ['ignore', 'pipe', 'pipe'] });
+proc.stdout.on('data', keepOutput);
+proc.stderr.on('data', keepOutput);
+proc.on('exit', (code, signal) => { chromeExit = { code, signal }; });
+
+// DevTools 埠由 Chrome 動態分配並寫入 profile 目錄，不使用固定埠；等待上限 30 秒
+const CONNECT_TIMEOUT_MS = 30000;
+const exitError = () => new Error(`Chrome 提早退出（code=${chromeExit.code}, signal=${chromeExit.signal}）\n${chromeLog()}`);
+const waitForPort = async () => {
+  const file = path.join(profile, 'DevToolsActivePort');
+  const started = Date.now();
+  while (Date.now() - started < CONNECT_TIMEOUT_MS) {
+    if (chromeExit) throw exitError();
+    try { return Number((await readFile(file, 'utf8')).split('\n')[0]); }
+    catch { await new Promise((r) => setTimeout(r, 200)); }
+  }
+  throw new Error(`Chrome 已啟動但未在 ${CONNECT_TIMEOUT_MS / 1000} 秒內開啟 DevTools 埠\n${chromeLog()}`);
+};
 
 let exitCode = 1;
 try {
+  const port = await waitForPort();
   let targets;
   for (let i = 0; i < 100 && !targets; i++) {
+    if (chromeExit) throw exitError();
     try { targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json(); }
     catch { await new Promise((r) => setTimeout(r, 100)); }
   }
   const page = targets?.find((t) => t.type === 'page');
-  if (!page) throw new Error('無法連線到 Chrome DevTools');
+  if (!page) throw new Error(`DevTools 埠 ${port} 已開啟，但無法取得頁面目標\n${chromeLog()}`);
 
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });

@@ -9,6 +9,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+// PAGE_TESTS 只能指定 tests/browser/ 內的 .js 檔名，不接受路徑或 ../（在啟動瀏覽器前檢查）
+const SUITE = process.env.PAGE_TESTS || 'page-tests.js';
+if (!/^[A-Za-z0-9_-]+\.js$/.test(SUITE)) {
+  console.error('PAGE_TESTS 只允許 tests/browser/ 內的 .js 檔名，收到：' + SUITE);
+  process.exit(2);
+}
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
 const CANDIDATES = [
   process.env.CHROME_PATH,
@@ -76,7 +82,7 @@ try {
   }
 
   const only = process.argv[2];
-  const src = await readFile(path.join(ROOT, 'tests/browser/page-tests.js'), 'utf8');
+  const src = await readFile(path.join(ROOT, 'tests/browser', SUITE), 'utf8');
   const expr = `(${src})(${JSON.stringify(only || '')})`;
   const res = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true, timeout: 600000 });
   if (res.result?.exceptionDetails || res.result?.result?.subtype === 'error') {

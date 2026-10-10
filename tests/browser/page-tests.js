@@ -163,6 +163,33 @@
     check((await core.runJob('after', async () => 'again')) === 'again', '取消後無法重新啟動');
   });
 
+  await run('Erase：工作進行中被拒絕時保留遮罩，且不改動原圖與歷史；成功後才清理遮罩', async () => {
+    await openPattern(320, 200);
+    main.selectTool('erase');
+    // 讀取目前遮罩在指定像素的 alpha（透過工具自己的 overlay 繪製結果）
+    const maskAlphaAt = (x, y) => {
+      const real = document.createElement('canvas'); real.width = 320; real.height = 200;
+      const g = real.getContext('2d');
+      S.tool.overlay(g, 1);
+      return g.getImageData(x, y, 1, 1).data[3];
+    };
+    const docBefore = S.doc, histBefore = S.hist.length;
+    let releaseBlocker;
+    const blocker = core.runJob('blocker', () => new Promise((r) => { releaseBlocker = r; }));
+    await sleep(20);
+    S.tool.down({ x: 100, y: 80 }); S.tool.move({ x: 140, y: 120 }); S.tool.up(); // 被拒絕：工作鎖被佔用
+    await sleep(50);
+    check(S.doc === docBefore && S.hist.length === histBefore, '被拒絕後原圖或歷史被改動');
+    check(maskAlphaAt(120, 100) > 0, '被拒絕後遮罩被清空，使用者的框選遺失');
+    releaseBlocker('done');
+    await blocker;
+    await sleep(30);
+    // 再次操作：原遮罩仍在，加入第二個框後一併消除
+    S.tool.down({ x: 150, y: 90 }); S.tool.move({ x: 170, y: 110 }); S.tool.up();
+    await waitFor(() => S.hist.length === histBefore + 1, 60000, '消除完成');
+    check(maskAlphaAt(120, 100) === 0, '成功套用後遮罩未清理');
+  });
+
   await run('模型退回：發出事件後以 toast 告知使用者', async () => {
     window.dispatchEvent(new CustomEvent('xiuxiu:model-fallback', { detail: { from: 'RVM 影片摳圖', to: 'U²-Net（輕量）' } }));
     await sleep(30);

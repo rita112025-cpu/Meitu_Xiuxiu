@@ -39,8 +39,11 @@ export async function runJob(title, fn) {
   setP(0, '準備中…');
   box.classList.add('show');
   $('#jobCancel', box).onclick = () => { ac.abort(); $('#jobLabel', box).textContent = '正在取消…'; };
+  // 取消後立即返回，不等待底層仍在執行的步驟（例如 ORT 推論無法中斷）；其結果會被丟棄
+  const aborted = new Promise((_, rej) => ac.signal.addEventListener('abort', () => rej(new DOMException('Aborted', 'AbortError')), { once: true }));
+  aborted.catch(() => {});
   try {
-    const r = await fn({ signal: ac.signal, progress: setP });
+    const r = await Promise.race([fn({ signal: ac.signal, progress: setP }), aborted]);
     if (ac.signal.aborted) { toast('已取消，畫面維持原樣'); return null; }
     return r;
   } catch (e) {

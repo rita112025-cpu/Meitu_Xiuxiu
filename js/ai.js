@@ -16,13 +16,15 @@ export const MODELS = {
 
 export const hasGPU = typeof navigator !== 'undefined' && !!navigator.gpu;
 const sessions = new Map();
+const loading = new Map(); // 進行中的模型載入，避免並行呼叫重複下載與建立 session
 let ortP;
 function getOrt() {
+  // 失敗時清除快取，下次呼叫可以重新嘗試載入（否則一次網路失敗會讓 AI 功能直到重新整理前都不能用）
   ortP ||= import(ORT_BASE + 'ort.webgpu.min.mjs').then((o) => {
     o.env.wasm.wasmPaths = ORT_BASE;
     o.env.wasm.numThreads = 1;
     return o;
-  });
+  }).catch((e) => { ortP = null; throw e; });
   return ortP;
 }
 
@@ -61,8 +63,7 @@ async function createSession(key, buf, eps) {
   return { s, ep: eps[0], ort };
 }
 
-export async function getSession(key, { onProgress, signal } = {}) {
-  if (sessions.has(key)) return sessions.get(key);
+async function loadSession(key, { onProgress, signal }) {
   const buf = await fetchModel(key, onProgress, signal);
   abortCheck(signal);
   onProgress?.(1, `載入 ${MODELS[key].name}…`);
@@ -73,6 +74,16 @@ export async function getSession(key, { onProgress, signal } = {}) {
   return entry;
 }
 
+// 同一模型的並行呼叫共用同一個載入 Promise；失敗後移除，讓下一次呼叫可以重試。
+// 注意：共用的載入只受發起者的 signal 控制。
+export async function getSession(key, { onProgress, signal } = {}) {
+  if (sessions.has(key)) return sessions.get(key);
+  if (!loading.has(key)) {
+    loading.set(key, loadSession(key, { onProgress, signal }).finally(() => loading.delete(key)));
+  }
+  return loading.get(key);
+}
+
 // 執行推論；WebGPU 執行失敗時自動退回 WASM 重試一次
 async function run(key, feedsFn, opts) {
   let ent = await getSession(key, opts);
@@ -81,6 +92,7 @@ async function run(key, feedsFn, opts) {
     if (ent.ep === 'wasm') throw e;
     console.warn('WebGPU 推論失敗，改用 WASM', e);
     sessions.delete(key);
+    try { await ent.s.release?.(); } catch (re) { console.warn('釋放 WebGPU session 失敗', re); }
     const buf = await fetchModel(key);
     ent = await createSession(key, buf, ['wasm']);
     sessions.set(key, ent);

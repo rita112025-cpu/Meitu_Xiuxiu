@@ -1,0 +1,12 @@
+{
+  "name": "meitu-xiuxiu",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "瀏覽器端修圖與影片工具（原生 HTML/CSS/ES Module，無建置步驟）",
+  "scripts": {
+    "test": "node --test tests/video.test.mjs tests/ai.test.mjs",
+    "check": "node --check js/core.js && node --check js/ai.js && node --check js/video.js && node --check js/tools-video.js && node --check js/tools-image.js && node --check js/main.js"
+  },
+  "license": "UNLICENSED"
+}

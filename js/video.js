@@ -6,19 +6,42 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const supported = () => typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';
 
-export function seek(video, t) {
-  return new Promise((res) => {
+// 定位到時間 t。會在 seeked 時解析；媒體錯誤、逾時或取消時拒絕，避免永久等待
+export function seek(video, t, { signal, timeoutMs = 15000 } = {}) {
+  return new Promise((res, rej) => {
     t = Math.min(Math.max(0, t), Math.max(0, video.duration - 0.001));
     if (Math.abs(video.currentTime - t) < 1e-4 && video.readyState >= 2) return res();
-    const on = () => { video.removeEventListener('seeked', on); res(); };
-    video.addEventListener('seeked', on); video.currentTime = t;
+    let tm;
+    const finish = (fn, v) => {
+      clearTimeout(tm);
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+      fn(v);
+    };
+    const onSeeked = () => finish(res);
+    const onError = () => finish(rej, new Error('影片讀取失敗，無法定位到指定畫面'));
+    const onAbort = () => finish(rej, new DOMException('Aborted', 'AbortError'));
+    tm = setTimeout(() => finish(rej, new Error('影片定位逾時，請確認影片可正常播放')), timeoutMs);
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener('abort', onAbort);
+    video.addEventListener('seeked', onSeeked);
+    video.addEventListener('error', onError);
+    video.currentTime = t;
   });
 }
 
 export async function loadVideo(file) {
   const url = URL.createObjectURL(file), video = document.createElement('video');
   video.muted = true; video.playsInline = true; video.preload = 'auto'; video.src = url;
-  await new Promise((res, rej) => { video.onloadeddata = res; video.onerror = () => rej(new Error('無法讀取此影片（請使用 MP4 或 WebM）')); });
+  try {
+    await new Promise((res, rej) => { video.onloadeddata = res; video.onerror = () => rej(new Error('無法讀取此影片（請使用 MP4 或 WebM）')); });
+  } catch (e) {
+    // 讀取失敗：釋放解碼器與 Blob URL，避免失敗的檔案一直佔用記憶體
+    video.removeAttribute('src'); video.load?.();
+    URL.revokeObjectURL(url);
+    throw e;
+  }
   const V = { file, url, video, w: video.videoWidth, h: video.videoHeight, dur: video.duration, fps: 30 };
   // 估算影格率
   if (video.requestVideoFrameCallback) {
@@ -39,11 +62,13 @@ export async function loadVideo(file) {
 }
 
 async function decodeAudio(file) {
+  let ac = null;
   try {
-    const ac = new AudioContext({ sampleRate: 48000 });
-    const b = await ac.decodeAudioData(await file.arrayBuffer()); ac.close();
+    ac = new AudioContext({ sampleRate: 48000 });
+    const b = await ac.decodeAudioData(await file.arrayBuffer());
     return b.length ? b : null;
   } catch { return null; }
+  finally { ac?.close().catch(() => {}); } // 解碼失敗時也要關閉，否則 AudioContext 會洩漏
 }
 
 // 透明 WebM：Chrome 的 WebCodecs 不支援 alpha 編碼，所以自己做 VP9 alpha（WebM BlockAdditions）：
@@ -54,7 +79,8 @@ async function loadWebmMuxerWithAlpha() {
     .replace('createInternalChunk_fn).call(this, data, type, timestamp, VIDEO_TRACK_NUMBER);', 'createInternalChunk_fn).call(this, data, type, timestamp, VIDEO_TRACK_NUMBER, void 0, meta && meta.additions);')
     .replace('chunk.additions ? { id: 30113', 'chunk.type === "delta" ? { id: 251, data: new Uint8Array([255]) } : null,\n      chunk.additions ? { id: 30113');
   if (patched === src) throw new Error('無法啟用透明 WebM 輸出');
-  return import(URL.createObjectURL(new Blob([patched], { type: 'text/javascript' })));
+  const url = URL.createObjectURL(new Blob([patched], { type: 'text/javascript' }));
+  try { return await import(url); } finally { URL.revokeObjectURL(url); }
 }
 const vint8 = (n) => { const b = new Uint8Array(8); b[0] = 1; for (let i = 7; i >= 1; i--) { b[i] = n % 256; n = Math.floor(n / 256); } return b; };
 function blockAdditions(alphaData) { // BlockMore{BlockAddID=1, BlockAdditional=alphaData}
@@ -110,7 +136,8 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
     while (aPos < end) {
       const len = Math.min(4800, end - aPos), data = new Float32Array(len * ach);
       chs.forEach((c, i) => data.set(c.subarray(aPos, aPos + len), i * len));
-      aenc.encode(new AudioData({ format: 'f32-planar', sampleRate: sr, numberOfFrames: len, numberOfChannels: ach, timestamp: Math.round((aPos / sr) * 1e6), data }));
+      const ad = new AudioData({ format: 'f32-planar', sampleRate: sr, numberOfFrames: len, numberOfChannels: ach, timestamp: Math.round((aPos / sr) * 1e6), data });
+      aenc.encode(ad); ad.close(); // encode() 不會接管 AudioData 的所有權，需自行關閉
       aPos += len;
     }
   };
@@ -121,7 +148,7 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
   try {
     for (let i = 0; i < total; i++) {
       abortCheck(signal); if (err) throw err;
-      await seek(V.video, (i + 0.5) / fps);
+      await seek(V.video, (i + 0.5) / fps, { signal });
       fg.drawImage(V.video, 0, 0);
       const out = await frameFn(fc, i);
       const ts = Math.round((i * 1e6) / fps), du = Math.round(1e6 / fps), kf = { keyFrame: i % 60 === 0 };

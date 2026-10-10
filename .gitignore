@@ -12,3 +12,4 @@ __pycache__/
 # Operating system files
 Thumbs.db
 .DS_Store
+node_modules/

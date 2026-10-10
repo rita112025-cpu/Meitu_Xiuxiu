@@ -306,10 +306,13 @@ tools.erase = (() => {
   const ensure = () => { if (!mask || mask.width !== S.doc.width || mask.height !== S.doc.height) mask = mk(S.doc.width, S.doc.height); };
   async function go() {
     if (busy) return; busy = true;
-    const m = mask, before = S.doc; mask = null; rect = null; render();
+    // 不先清空遮罩：工作被拒絕、取消或失敗時，使用者的框選必須保留，才能再次操作
+    const m = mask, before = S.doc; render();
     const res = await runJob('生成中', async ({ signal, progress }) => AI.inpaint(before, m, { signal, onProgress: progress }));
     busy = false;
-    if (res) { commit(res); setCompare(before); }
+    // 只有結果正式套用後才清理遮罩；原圖與歷史紀錄由 commit 負責，這裡不另外修改
+    if (res && S.doc !== before) { toast('畫面在消除期間已改變，已捨棄過期結果；遮罩保留', true); }
+    else if (res) { mask = null; rect = null; commit(res); setCompare(before); }
     render();
   }
   return {
@@ -350,6 +353,7 @@ tools.erase = (() => {
         const x = Math.min(rect.x0, rect.x1), y = Math.min(rect.y0, rect.y1), w = Math.abs(rect.x1 - rect.x0), h = Math.abs(rect.y1 - rect.y0);
         if (w < 3 || h < 3) { rect = null; return render(); }
         const g = mask.getContext('2d'); g.fillStyle = '#ff3b3b'; g.fillRect(x, y, w, h);
+        rect = null; // 框選已寫入遮罩，之後以遮罩為準
       }
       go();
     },
@@ -409,6 +413,7 @@ tools.cutout = (() => {
         const src = S.doc;
         const r = await runJob('生成中', ({ signal, progress }) => AI.matteImage(src, { signal, onProgress: progress }));
         if (!r) return;
+        if (S.doc !== src) { toast('畫面在摳圖期間已改變，已捨棄過期結果', true); return; }
         raw = r.alpha; edit = new Int8Array(raw.length); const W = src.width, H = src.height;
         srcPix = src.getContext('2d').getImageData(0, 0, W, H); outId = new ImageData(W, H);
         cut = mk(W, H); cutCtx = cut.getContext('2d'); enableUI(); rebuild();
@@ -462,7 +467,8 @@ tools.enhance = (() => {
       $('#hRun').onclick = async () => {
         const sc = +$('#hScale .on').dataset.v, key = modelKey($('input[name=hm]:checked').value, sc), before = S.doc;
         const res = await runJob('生成中', ({ signal, progress }) => AI.upscale(before, { model: key, scale: sc, signal, onProgress: progress }));
-        if (res) { commit(res); setCompare(before); }
+        if (res && S.doc !== before) toast('畫面在變清晰期間已改變，已捨棄過期結果', true);
+        else if (res) { commit(res); setCompare(before); }
       };
     },
     onDocChange() { if ($('#hScale')) info(); },

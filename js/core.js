@@ -27,26 +27,52 @@ export function toast(msg, bad) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = ''), bad ? 5000 : 2600);
 }
 
+// AI 模型退回備用模型時通知使用者（ai.js 發出事件，不直接依賴 DOM）
+addEventListener('xiuxiu:model-fallback', (e) => toast(`${e.detail?.from ?? '模型'} 無法使用，已改用 ${e.detail?.to ?? '備用模型'}（品質可能較低）`, true));
+
 // ---------- AI 工作：生成中 + 進度 + 取消 ----------
+// 單一工作鎖：底層工作（fn）真正結束前不允許啟動新工作，避免資源衝突。
+// 工作進行中收到新請求會被拒絕（不執行 fn、不改動進度）。只有使用者按取消才會中止目前工作；
+// UI 會立即返回，但鎖要等底層 fn 結束才釋放。
+let jobBusy = false;
 export async function runJob(title, fn) {
+  if (jobBusy) { toast('目前有工作進行中，請完成或取消後再試', true); return null; }
+  jobBusy = true;
   const ac = new AbortController();
   const box = $('#job');
-  $('#jobTitle', box).textContent = title;
+  let uiOpen = true; // UI 返回後，舊工作的進度不再寫入畫面
   const setP = (p, label) => {
+    if (!uiOpen) return;
     if (label) $('#jobLabel', box).textContent = label;
     if (p != null) { $('#jobBar', box).style.width = Math.round(clamp(p, 0, 1) * 100) + '%'; $('#jobPct', box).textContent = Math.round(clamp(p, 0, 1) * 100) + '%'; }
   };
+  $('#jobTitle', box).textContent = title;
   setP(0, '準備中…');
   box.classList.add('show');
-  $('#jobCancel', box).onclick = () => { ac.abort(); $('#jobLabel', box).textContent = '正在取消…'; };
+  $('#jobCancel', box).onclick = () => {
+    if (!uiOpen || ac.signal.aborted) return;
+    ac.abort();
+    $('#jobLabel', box).textContent = '正在取消…';
+  };
+  // 取消後立即返回，不等待底層仍在執行的步驟（例如 ORT 推論無法中斷）
+  const aborted = new Promise((_, rej) => ac.signal.addEventListener('abort', () => rej(new DOMException('Aborted', 'AbortError')), { once: true }));
+  aborted.catch(() => {});
+  const work = Promise.resolve().then(() => fn({ signal: ac.signal, progress: setP }));
+  // 底層工作真正結束（完成、失敗或取消後清理完）才釋放鎖
+  const release = () => { jobBusy = false; };
+  work.then(release, release);
   try {
-    const r = await fn({ signal: ac.signal, progress: setP });
+    const r = await Promise.race([work, aborted]);
     if (ac.signal.aborted) { toast('已取消，畫面維持原樣'); return null; }
     return r;
   } catch (e) {
     if (e?.name === 'AbortError' || ac.signal.aborted) { toast('已取消，畫面維持原樣'); return null; }
     console.error(e); toast('處理失敗：' + (e?.message || e), true); return null;
-  } finally { box.classList.remove('show'); }
+  } finally {
+    uiOpen = false;
+    box.classList.remove('show');
+    $('#jobCancel', box).onclick = null;
+  }
 }
 
 // ---------- 渲染 ----------
@@ -197,9 +223,11 @@ export function commit(canvas) {
   S.redo = []; S.doc = canvas; S.compare = null; afterDocChange();
 }
 export function setCompare(before) { S.compare = { before, pos: 0.5 }; refreshHist(); render(); }
-export function undo() { if (!S.hist.length) return; S.redo.push(S.doc); S.doc = S.hist.pop(); S.compare = null; afterDocChange(); }
-export function redo() { if (!S.redo.length) return; S.hist.push(S.doc); trimHistory(); S.doc = S.redo.pop(); S.compare = null; afterDocChange(); }
-export function resetAll() { if (!S.orig || S.mode !== 'image') return; commit(clone(S.orig)); toast('已重置為原圖（可復原）'); }
+// AI 工作進行中時不允許復原、重做或重置：工作完成後會套用它開始時的畫面，中途改動會讓結果錯置
+const jobBlocked = () => { if (!jobBusy) return false; toast('AI 工作進行中，請等待完成或取消後再試', true); return true; };
+export function undo() { if (jobBlocked() || !S.hist.length) return; S.redo.push(S.doc); S.doc = S.hist.pop(); S.compare = null; afterDocChange(); }
+export function redo() { if (jobBlocked() || !S.redo.length) return; S.hist.push(S.doc); trimHistory(); S.doc = S.redo.pop(); S.compare = null; afterDocChange(); }
+export function resetAll() { if (jobBlocked() || !S.orig || S.mode !== 'image') return; commit(clone(S.orig)); toast('已重置為原圖（可復原）'); }
 
 $('#btnUndo').onclick = undo; $('#btnRedo').onclick = redo; $('#btnReset').onclick = resetAll;
 $('#btnFit').onclick = fit;

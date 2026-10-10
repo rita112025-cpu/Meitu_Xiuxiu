@@ -3,12 +3,22 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "瀏覽器端修圖與影片工具（原生 HTML/CSS/ES Module，無建置步驟）",
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "npm run test:unit && npm run test:node",
+    "test:unit": "vitest run",
+    "test:node": "node --test tests/video.test.mjs tests/ai.test.mjs",
+    "test:browser": "node tests/browser/run.mjs",
+    "test:watch": "vitest",
+    "check": "node --check js/core.js && node --check js/ai.js && node --check js/video.js && node --check js/tools-video.js && node --check js/tools-image.js && node --check js/main.js"
   },
   "devDependencies": {
     "jsdom": "^25.0.1",
     "vitest": "^2.1.8"
+  },
+  "license": "UNLICENSED",
+  "overrides": {
+    "tinypool": "^2.2.0",
+    "esbuild": "^0.25.12"
   }
 }

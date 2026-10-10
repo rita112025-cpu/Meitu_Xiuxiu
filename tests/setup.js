@@ -44,3 +44,19 @@ beforeEach(() => {
     disconnect() {}
   };
 });
+
+// jsdom 沒有 canvas 2D 實作（getContext 會回傳 null）。這裡提供無動作的替身，
+// 只供不讀取像素的測試（例如歷史紀錄的物件身分）使用；需要像素的測試應改用瀏覽器測試。
+const noop = () => {};
+HTMLCanvasElement.prototype.getContext = function () {
+  return {
+    fillRect: noop, clearRect: noop, drawImage: noop, putImageData: noop, save: noop, restore: noop,
+    beginPath: noop, closePath: noop, moveTo: noop, lineTo: noop, rect: noop, clip: noop, fill: noop, stroke: noop,
+    fillText: noop, strokeRect: noop, setTransform: noop, translate: noop, scale: noop, rotate: noop,
+    getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+    measureText: () => ({ width: 0 }),
+    createPattern: () => null,
+    createLinearGradient: () => ({ addColorStop: noop }),
+    createRadialGradient: () => ({ addColorStop: noop }),
+  };
+};

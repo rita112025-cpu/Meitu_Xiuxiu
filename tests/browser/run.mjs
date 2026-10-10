@@ -49,7 +49,7 @@ const port = 9300 + Math.floor(Math.random() * 500);
 const proc = spawn(chrome, [
   '--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
   '--no-first-run', '--no-default-browser-check', '--autoplay-policy=no-user-gesture-required',
-  '--disable-gpu', 'about:blank',
+  '--disable-gpu', ...(process.env.CI ? ['--no-sandbox'] : []), 'about:blank',
 ], { stdio: 'ignore' });
 
 let exitCode = 1;

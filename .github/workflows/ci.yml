@@ -1,0 +1,33 @@
+name: CI
+
+# 只在 Pull Request 觸發。不使用任何 secret 或 API Key。
+# 不執行 AI 模型下載與真實推論（需要連網下載模型，不納入一般 CI）。
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安裝 lockfile 中的依賴
+        run: npm ci
+
+      - name: 單元與 Node 測試（Vitest + node:test）
+        run: npm test
+
+      - name: JavaScript 語法檢查
+        run: npm run check
+
+      - name: 瀏覽器測試（headless Chrome，使用 runner 內建的 google-chrome）
+        run: npm run test:browser

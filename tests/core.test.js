@@ -70,6 +70,19 @@ describe('core.js', () => {
     expect(mod.S.redo[mod.S.redo.length - 1]).toBe(keep);
   });
 
+  it('clears invalid redo entries before trimming a new history branch', async () => {
+    const mod = await importFresh('../js/core.js');
+    const big = () => ({ width: 4096, height: 4096 }); // 64 MiB each
+    const oldest = big();
+    mod.S.doc = big();
+    mod.S.hist = [oldest, big()];
+    mod.S.redo = [big(), big()];
+    mod.commit(big());
+    expect(mod.S.redo).toHaveLength(0);
+    expect(mod.S.hist).toHaveLength(3);
+    expect(mod.S.hist[0]).toBe(oldest);
+  });
+
   it('tracks image history across undo and redo', async () => {
     const mod = await importFresh('../js/core.js');
     const original = mod.mk(2, 2);

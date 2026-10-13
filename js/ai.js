@@ -41,12 +41,17 @@ function getOrt() {
 
 
 async function fetchModel(key, onProgress, signal) {
+  abortCheck(signal);
   const m = MODELS[key];
   let cache;
   try {
     cache = await caches.open('xiuxiu-models-v1');
     const hit = await cache.match(m.url);
-    if (hit) return await hit.arrayBuffer();
+    if (hit) {
+      const buf = await hit.arrayBuffer();
+      abortCheck(signal);
+      return buf;
+    }
   } catch { /* 無快取可用 */ }
   const res = await fetch(m.url, { signal });
   if (!res.ok) throw new Error(`模型下載失敗 (${res.status})`);
@@ -76,6 +81,11 @@ async function createSession(key, buf, eps) {
   return { s, ep: eps[0], ort };
 }
 
+function reportBackend(ep) {
+  const gpu = ep === 'webgpu';
+  globalThis.dispatchEvent?.(new CustomEvent('xiuxiu:backend-change', { detail: { gpu } }));
+}
+
 async function loadSession(key, { onProgress, signal }) {
   const buf = await fetchModel(key, onProgress, signal);
   abortCheck(signal);
@@ -85,6 +95,7 @@ async function loadSession(key, { onProgress, signal }) {
   try { entry = await createSession(key, buf, gpu ? ['webgpu', 'wasm'] : ['wasm']); }
   catch (e) { console.warn('WebGPU 建立失敗，改用 WASM', e); entry = await createSession(key, buf, ['wasm']); }
   sessions.set(key, entry);
+  reportBackend(entry.ep);
   return entry;
 }
 
@@ -130,8 +141,10 @@ async function run(key, feedsFn, opts) {
     sessions.delete(key);
     try { await ent.s.release?.(); } catch (re) { console.warn('釋放 WebGPU session 失敗', re); }
     const buf = await fetchModel(key, opts?.onProgress, opts?.signal);
+    abortCheck(opts?.signal);
     ent = await createSession(key, buf, ['wasm']);
     sessions.set(key, ent);
+    reportBackend(ent.ep);
     return await ent.s.run(feedsFn(ent.ort));
   }
 }

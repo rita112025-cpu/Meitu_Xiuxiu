@@ -51,13 +51,22 @@ export async function runJob(title, fn) {
   $('#jobTitle', box).textContent = title;
   setP(0, '準備中…');
   const prevFocus = document.activeElement; // 對話框關閉後還原焦點
-  box.classList.add('show');
-  $('#jobCancel', box).focus();
-  $('#jobCancel', box).onclick = () => {
+  const peers = [...document.body.children].filter((el) => el !== box && el.tagName !== 'SCRIPT');
+  const inertStates = peers.map((el) => [el, el.inert]);
+  peers.forEach((el) => { el.inert = true; });
+  const cancel = () => {
     if (!uiOpen || ac.signal.aborted) return;
     ac.abort();
     $('#jobLabel', box).textContent = '正在取消…';
   };
+  const keepFocus = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    else if (e.key === 'Tab') { e.preventDefault(); $('#jobCancel', box).focus(); }
+  };
+  box.classList.add('show');
+  box.addEventListener('keydown', keepFocus);
+  $('#jobCancel', box).focus();
+  $('#jobCancel', box).onclick = cancel;
   // 取消後立即返回，不等待底層仍在執行的步驟（例如 ORT 推論無法中斷）
   const aborted = new Promise((_, rej) => ac.signal.addEventListener('abort', () => rej(new DOMException('Aborted', 'AbortError')), { once: true }));
   aborted.catch(() => {});
@@ -75,7 +84,9 @@ export async function runJob(title, fn) {
   } finally {
     uiOpen = false;
     box.classList.remove('show');
+    box.removeEventListener('keydown', keepFocus);
     $('#jobCancel', box).onclick = null;
+    inertStates.forEach(([el, inert]) => { el.inert = inert; });
     if (prevFocus?.isConnected) prevFocus.focus();
   }
 }
@@ -226,8 +237,9 @@ export function trimHistory() {
   }
 }
 export function commit(canvas) {
+  S.redo = [];
   if (S.doc) { S.hist.push(S.doc); trimHistory(); }
-  S.redo = []; S.doc = canvas; S.compare = null; afterDocChange();
+  S.doc = canvas; S.compare = null; afterDocChange();
 }
 export function setCompare(before) { S.compare = { before, pos: 0.5 }; refreshHist(); render(); }
 // AI 工作進行中時不允許復原、重做或重置：工作完成後會套用它開始時的畫面，中途改動會讓結果錯置

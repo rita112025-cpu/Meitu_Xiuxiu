@@ -15,10 +15,14 @@ const ALL = { ...tools, ...vtools };
 const ORDER = { image: ['new', 'adjust', 'text', 'erase', 'cutout', 'enhance', 'color', 'vmatteLink'], video: ['new', 'vwm', 'vmatte', 'vup'] };
 const store = {};
 
-$('#badge').textContent = '檢測中…';
-detectGPU().then((gpu) => {
+const setBackendBadge = (gpu) => {
   $('#badge').textContent = gpu ? 'WebGPU' : 'CPU（較慢）';
   $('#badge').classList.toggle('warn', !gpu);
+};
+$('#badge').textContent = '檢測中…';
+addEventListener('xiuxiu:backend-change', (e) => setBackendBadge(!!e.detail?.gpu));
+detectGPU().then((gpu) => {
+  setBackendBadge(gpu);
   if (!gpu) setTimeout(() => toast('未偵測到 WebGPU，AI 會改用 CPU 執行，速度較慢。建議使用最新版 Chrome / Edge。', true), 800);
 });
 

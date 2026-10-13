@@ -88,7 +88,12 @@
     const p = core.runJob('F', () => new Promise((r) => { release = r; }));
     await sleep(20);
     check(document.activeElement === $('#jobCancel'), '工作顯示時焦點未移到取消鈕');
+    check($('#top').inert && $('main').inert, '工作顯示時背景介面未設為 inert');
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    $('#jobCancel').dispatchEvent(tab);
+    check(tab.defaultPrevented && document.activeElement === $('#jobCancel'), 'Tab 未被限制在工作對話框內');
     release('x'); await p;
+    check(!$('#top').inert && !$('main').inert, '工作結束後背景介面的 inert 未還原');
     check(document.activeElement === btn, '工作結束後未還原焦點');
   });
 
@@ -124,6 +129,9 @@
     await waitFor(() => $('#badge').textContent !== '檢測中…', 5000, '徽章更新');
     const want = gpu ? 'WebGPU' : 'CPU（較慢）';
     check($('#badge').textContent === want, `徽章 ${$('#badge').textContent}，預期 ${want}`);
+    dispatchEvent(new CustomEvent('xiuxiu:backend-change', { detail: { gpu: false } }));
+    check($('#badge').textContent === 'CPU（較慢）' && $('#badge').classList.contains('warn'), 'WASM fallback 後徽章未切換為 CPU');
+    dispatchEvent(new CustomEvent('xiuxiu:backend-change', { detail: { gpu } }));
   });
 
   await run('調色：一鍵換色後調整滑桿與換色目標，預覽更新且套用後只產生一筆歷史', async () => {

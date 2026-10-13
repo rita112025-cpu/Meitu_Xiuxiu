@@ -57,6 +57,19 @@ describe('core.js', () => {
     expect(clamp(15, 0, 10)).toBe(10);
   });
 
+  it('counts the redo stack toward the memory cap, dropping the farthest redo first', async () => {
+    const mod = await importFresh('../js/core.js');
+    const big = () => ({ width: 4096, height: 4096 }); // 64 MiB each
+    mod.S.hist = [big(), big()];
+    mod.S.redo = [big(), big(), big(), big()]; // 384 MiB total > 256 MiB cap
+    const keep = mod.S.redo[3];
+    mod.trimHistory();
+    const total = [...mod.S.hist, ...mod.S.redo].length * 64 * 1024 * 1024;
+    expect(total).toBeLessThanOrEqual(256 * 1024 * 1024);
+    expect(mod.S.hist).toHaveLength(0);
+    expect(mod.S.redo[mod.S.redo.length - 1]).toBe(keep);
+  });
+
   it('tracks image history across undo and redo', async () => {
     const mod = await importFresh('../js/core.js');
     const original = mod.mk(2, 2);

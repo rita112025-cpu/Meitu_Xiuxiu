@@ -20,7 +20,6 @@ export async function loadVideoFile(file) {
   V = v;
   const c = mk(V.w, V.h); c.getContext('2d').drawImage(V.video, 0, 0);
   setImage(c); // 以第一格作為畫面
-  S.orig = c;
   $('#tlRange').value = 0; updTime(); $('#timeline').hidden = false;
   vtools.vwm.reset?.();
   toast(`已載入影片 ${V.w}×${V.h}，約 ${V.fps} fps，${fmtT(V.dur)}`);
@@ -45,7 +44,6 @@ function startPlay() {
 $('#tlPlay').onclick = () => (playing ? stopPlay() : startPlay());
 $('#tlRange').oninput = () => { if (!V) return; stopPlay(); gotoT((val('tlRange') / 1000) * V.dur); };
 export const hasVideo = () => !!V;
-window.__video = () => V; // 除錯用
 
 // ---------- 共用：輸出區塊 ----------
 const resultUrls = new Map();
@@ -71,15 +69,23 @@ const supportMsg = () => (VD.supported() ? '' : '<p class="warn">此瀏覽器不
 // ============ 影片去水印 ============
 vtools.vwm = (() => {
   let rects = [], cur = null;
+  const PAD = 3; // 遮罩比框選範圍多出的邊界，蓋住水印邊緣
+  // 遮罩的外接矩形（與 masks() 的填色範圍一致，並限制在影格內），每格重複使用，不必重掃遮罩
+  const boxOf = (r) => {
+    const x0 = Math.max(0, Math.floor(r.x - PAD)), y0 = Math.max(0, Math.floor(r.y - PAD));
+    const x1 = Math.min(V.w, Math.ceil(r.x + r.w + PAD)), y1 = Math.min(V.h, Math.ceil(r.y + r.h + PAD));
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  };
   const masks = () => rects.map((r) => {
-    const c = mk(V.w, V.h), g = c.getContext('2d'); g.fillStyle = '#fff'; const d = 3; g.fillRect(r.x - d, r.y - d, r.w + 2 * d, r.h + 2 * d); return c;
+    const c = mk(V.w, V.h), g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(r.x - PAD, r.y - PAD, r.w + 2 * PAD, r.h + 2 * PAD);
+    return { canvas: c, box: boxOf(r) };
   });
   const fill = async (frame, ms, { signal, onProgress } = {}) => {
     let s = frame;
     for (let i = 0; i < ms.length; i++) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      s = (await AI.inpaint(s, ms[i], {
-        signal,
+      s = (await AI.inpaint(s, ms[i].canvas, {
+        signal, box: ms[i].box,
         onProgress: (p, label) => onProgress?.((i + (p ?? 0)) / ms.length, label),
       })) || s;
     }
@@ -183,7 +189,8 @@ vtools.vup = (() => {
   const info = () => {
     if (!V) return ($('#uInfo').textContent = '請先載入影片');
     const d = dims();
-    $('#uInfo').innerHTML = `輸出：<b>${d.w} × ${d.h}</b>${d.capped ? '（已限制在 4K 上限）' : ''}<br><span class="hint">AI 放大每格都很耗時，長影片請預留較多時間。</span>`;
+    const slow = d.f <= 2 && $('input[name=um]:checked').value !== 'std' ? '<br>此模型只有 4 倍版本，2 倍會先以 4 倍運算再縮小，耗時與 4 倍相同。' : '';
+    $('#uInfo').innerHTML = `輸出：<b>${d.w} × ${d.h}</b>${d.capped ? '（已限制在 4K 上限）' : ''}${slow}<br><span class="hint">AI 放大每格都很耗時，長影片請預留較多時間。</span>`;
   };
   return {
     label: '影片放大', icon: 'sparkle',
@@ -196,14 +203,15 @@ vtools.vup = (() => {
       <p id="uInfo"></p>${outBlock('u')}`,
     bind() {
       $('#uScale').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; $$('#uScale button').forEach((x) => x.classList.toggle('on', x === b)); info(); };
+      $$('input[name=um]').forEach((r) => (r.onchange = info));
       info();
       $('#uGo').onclick = async () => {
-        if (!needVideo()) return; const d = dims(), m = $('input[name=um]:checked').value, mk_ = m === 'std' ? (d.f <= 2 ? 'std2' : 'std4') : m, fmt = $('#uFmt').value, fps = pickFps('u');
+        if (!needVideo()) return; const d = dims(), m = $('input[name=um]:checked').value, modelKey = m === 'std' ? (d.f <= 2 ? 'std2' : 'std4') : m, fmt = $('#uFmt').value, fps = pickFps('u');
         const r = await runJob('生成中', async ({ signal, progress }) => {
-          await AI.getSession(mk_, { signal, onProgress: progress });
+          await AI.getSession(modelKey, { signal, onProgress: progress });
           return VD.exportVideo({
             V, fps, format: fmt, alpha: false, outW: d.w, outH: d.h, signal, onProgress: progress,
-            frameFn: async (f) => fitTo(await AI.upscale(f, { model: mk_, scale: d.f <= 2 ? 2 : 4, signal }), d.w, d.h),
+            frameFn: async (f) => fitTo(await AI.upscale(f, { model: modelKey, scale: d.f <= 2 ? 2 : 4, signal }), d.w, d.h),
           });
         });
         if (r) showResult('u', r, `xiuxiu-放大${d.w}x${d.h}.${fmt}`);

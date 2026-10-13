@@ -3,24 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#141019">
 <title>輕修｜線上修圖與影片工具</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%235b8cff'/%3E%3Cpath d='M12 5l1.6 4.4L18 11l-4.4 1.6L12 17l-1.6-4.4L6 11l4.4-1.6z' fill='white'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body class="mode-image">
 <header id="top">
-  <div class="brand"><span class="logo">✦</span>輕修 <small>線上修圖</small></div>
-  <nav class="modes">
-    <button data-mode="image" class="on">圖片修圖</button>
-    <button data-mode="video">影片工具</button>
+  <div class="brand" aria-label="輕修線上修圖">
+    <span class="logo" aria-hidden="true"><b>qing</b><b>xiu<i>.</i></b></span>
+    <small>本機創作工具</small>
+  </div>
+  <nav class="modes" aria-label="編輯模式">
+    <button data-mode="image" class="on" aria-pressed="true">圖片修圖</button>
+    <button data-mode="video" aria-pressed="false">影片工具</button>
   </nav>
   <div class="spacer"></div>
   <span id="badge" class="badge" title="AI 運算後端"></span>
   <div class="grp" id="histGrp">
-    <button id="btnUndo" disabled title="復原 (Ctrl+Z)">↶ 復原</button>
-    <button id="btnRedo" disabled title="重做 (Ctrl+Y)">↷ 重做</button>
-    <button id="btnReset" disabled title="一鍵重置為原圖">⟲ 重置</button>
-    <button id="btnHold" title="按住不放，暫時顯示原圖">👁 按住對比</button>
+    <button id="btnUndo" disabled title="復原 (Ctrl+Z)" aria-label="復原"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 7-4 4 4 4"/><path d="M5 11h8a6 6 0 0 1 6 6"/></svg><span class="btn-label">復原</span></button>
+    <button id="btnRedo" disabled title="重做 (Ctrl+Y)" aria-label="重做"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 4 4-4 4"/><path d="M19 11h-8a6 6 0 0 0-6 6"/></svg><span class="btn-label">重做</span></button>
+    <button id="btnReset" disabled title="一鍵重置為原圖" aria-label="重置為原圖"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11a8 8 0 1 1 2.3 6.1"/><path d="M4 5v6h6"/></svg><span class="btn-label">重置</span></button>
+    <button id="btnHold" title="按住不放，暫時顯示原圖"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg><span class="btn-label">按住對比</span></button>
   </div>
   <div id="expWrap">
     <button id="btnExport" class="primary">匯出</button><button id="btnExpMenu" class="primary caret" title="匯出選項">▾</button>
@@ -39,22 +43,23 @@
       <canvas id="cv"></canvas>
       <div id="empty">
         <div class="drop">
-          <div class="big">＋</div>
-          <h2>拖曳圖片或影片到這裡</h2>
-          <p>也可以貼上（Ctrl+V）或</p>
+          <div class="big" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></div>
+          <h2>把作品放進來，開始輕修</h2>
+          <p>拖曳圖片或影片、直接貼上，或從裝置選擇檔案</p>
           <button class="btn primary" id="emptyBtn">選擇檔案</button>
-          <p class="hint">🔒 全程在你的瀏覽器處理，不會上傳到伺服器</p>
+          <p class="formats">支援常見圖片、MP4 與 WebM</p>
+          <p class="privacy"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>全程在瀏覽器處理，不會上傳到伺服器</p>
         </div>
       </div>
       <button id="cmpClose" hidden>✕ 關閉前後對比</button>
       <div class="zoomBar"><span id="sizeTxt"></span><button id="zoomOut">－</button><span id="zoomTxt">100%</span><button id="zoomIn">＋</button><button id="btnFit">適合畫面</button></div>
-      <div class="tip">滾輪縮放 · 按住空白鍵拖曳移動</div>
+      <div class="tip"><span>滾輪縮放</span><span>空白鍵＋拖曳移動</span></div>
     </div>
     <div id="timeline" hidden><button id="tlPlay">▶</button><input type="range" id="tlRange" min="0" max="1000" value="0"><span id="tlTime">0:00.0 / 0:00.0</span></div>
   </section>
 </main>
 
-<div id="job">
+<div id="job" role="dialog" aria-modal="true" aria-labelledby="jobTitle" aria-describedby="jobLabel">
   <div class="card">
     <div class="spin"></div>
     <h2 id="jobTitle">生成中</h2>
@@ -65,7 +70,7 @@
     <p class="hint">取消後畫面會維持原樣</p>
   </div>
 </div>
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="mainFile" accept="image/*,video/mp4,video/webm" hidden>
 <script type="module" src="js/main.js"></script>
 </body>

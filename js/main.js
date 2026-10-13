@@ -1,7 +1,7 @@
 import { S, $, $$, toast, fit, render, setImage, fileToCanvas, refreshHist } from './core.js';
 import { tools } from './tools-image.js';
 import { vtools, loadVideoFile, hasVideo } from './tools-video.js';
-import { hasGPU } from './ai.js';
+import { detectGPU } from './ai.js';
 
 const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>', crop: '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
@@ -15,14 +15,17 @@ const ALL = { ...tools, ...vtools };
 const ORDER = { image: ['new', 'adjust', 'text', 'erase', 'cutout', 'enhance', 'color', 'vmatteLink'], video: ['new', 'vwm', 'vmatte', 'vup'] };
 const store = {};
 
-$('#badge').textContent = hasGPU ? 'WebGPU' : 'CPU（較慢）';
-$('#badge').classList.toggle('warn', !hasGPU);
-if (!hasGPU) setTimeout(() => toast('未偵測到 WebGPU，AI 會改用 CPU 執行，速度較慢。建議使用最新版 Chrome / Edge。', true), 800);
+$('#badge').textContent = '檢測中…';
+detectGPU().then((gpu) => {
+  $('#badge').textContent = gpu ? 'WebGPU' : 'CPU（較慢）';
+  $('#badge').classList.toggle('warn', !gpu);
+  if (!gpu) setTimeout(() => toast('未偵測到 WebGPU，AI 會改用 CPU 執行，速度較慢。建議使用最新版 Chrome / Edge。', true), 800);
+});
 
 function buildToolbar() {
   $('#toolbar').innerHTML = ORDER[S.mode].map((id) => {
     const t = id === 'vmatteLink' ? { label: '影片摳圖', icon: 'video' } : ALL[id];
-    return `<button data-t="${id}" title="${t.label}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICONS[t.icon]}</svg><span>${t.label}</span></button>`;
+    return `<button data-t="${id}" title="${t.label}" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[t.icon]}</svg><span>${t.label}</span></button>`;
   }).join('');
 }
 $('#toolbar').onclick = (e) => {
@@ -33,7 +36,11 @@ $('#toolbar').onclick = (e) => {
 export function selectTool(id) {
   S.tool?.leave?.();
   const t = ALL[id]; S.tool = t; S.toolId = id; S.preview = null;
-  $$('#toolbar button').forEach((b) => b.classList.toggle('on', b.dataset.t === id));
+  $$('#toolbar button').forEach((b) => {
+    const active = b.dataset.t === id;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
   const p = $('#panel');
   if (!S.doc && !t.noDoc && S.mode === 'image') p.innerHTML = `<h2>${t.label}</h2><p class="hint">請先新增一張圖片。</p><button class="btn primary" id="goNew">前往「新增」</button>`, ($('#goNew').onclick = () => selectTool('new'));
   else { p.innerHTML = `<h2>${t.label}</h2>` + t.html(); t.bind?.(p); t.enter?.(); }
@@ -47,7 +54,11 @@ function setMode(m) {
   store[S.mode] = { doc: S.doc, orig: S.orig, hist: S.hist, redo: S.redo, view: S.view };
   Object.assign(S, store[m] || { doc: null, orig: null, hist: [], redo: [], view: { s: 1, x: 0, y: 0 } }, { compare: null, preview: null, mode: m });
   document.body.className = 'mode-' + m;
-  $$('.modes button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+  $$('.modes button').forEach((b) => {
+    const active = b.dataset.mode === m;
+    b.classList.toggle('on', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
   $('#timeline').hidden = !(m === 'video' && hasVideo());
   $('#empty').hidden = !!S.doc;
   buildToolbar(); refreshHist(); fit();

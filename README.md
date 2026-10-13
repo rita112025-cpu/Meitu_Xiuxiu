@@ -25,7 +25,7 @@
    cd Meitu_Xiuxiu
    ```
 
-3. 雙擊 `Start.bat`，會啟動本機 HTTP Server 並自動開啟預設瀏覽器。
+3. 雙擊 `Start.bat`，會啟動本機 HTTP Server 並自動開啟瀏覽器（優先 Chrome，其次 Edge，最後才用系統預設瀏覽器）。
 4. 建議用支援 WebGPU 與 WebCodecs 的 Chrome／Edge 開啟顯示的網址。
 5. 載入圖片或影片，選擇工具完成處理後匯出；關閉伺服器視窗即可停止服務。
 
@@ -34,8 +34,10 @@
 需要用本機伺服器開啟（ES Module 不能用 file:// 開）：
 
 ```bash
-python -m http.server 8080
+python serve.py 8080
 ```
+
+`serve.py` 只提供網站所需的檔案（`index.html`、`style.css`、`js/`、`assets/`），不會公開 `.git/`、`node_modules/` 等目錄，並送出 COOP/COEP 標頭讓瀏覽器啟用跨來源隔離，AI 在 CPU（WASM）模式可使用最多 4 個執行緒。改用 `python -m http.server` 也能執行，但 CPU 模式只能單執行緒。
 
 然後用最新版 Chrome / Edge 開 http://localhost:8080 。建議有 WebGPU（沒有時自動退回 CPU，會很慢）。
 
@@ -61,7 +63,7 @@ python -m http.server 8080
 - 復原歷史最多保留 20 筆，並依 Canvas 估算容量在約 256 MiB 時淘汰舊紀錄；至少保留一筆，因此單張超大 Canvas 仍可能超過容量門檻。
 - 影片去水印將取消訊號傳入每個區域的 AI 處理，預覽進度依區域分配。
 - 重新產生影片結果時釋放舊預覽 Blob URL，頁面離開時回收結果與目前影片的 URL。
-- `Start.bat` 延遲約 700 ms 開啟瀏覽器，並加入連接埠配置失敗與伺服器結束狀態處理。
+- `Start.bat` 延遲約 2 秒開啟瀏覽器，並加入連接埠配置失敗與伺服器結束狀態處理。
 
 ## 使用的模型（首次使用時從 Hugging Face 下載，並快取在瀏覽器）
 
@@ -88,3 +90,5 @@ python -m http.server 8080
 - `js/ai.js` onnxruntime-web 推論（MI-GAN、U²-Net、Real-ESRGAN 分塊、RVM）
 - `js/tools-image.js` 新增 / 調整 / 文字 / 消除圖 / 摳圖 / 變清晰 / 調色
 - `js/tools-video.js`、`js/video.js` 影片去水印 / 去背 / 放大（WebCodecs 逐格編碼，保留聲音；透明 WebM 為自製 VP9 alpha 封裝）
+- `js/canvas.js` 共用的畫布建立與取消檢查
+- `serve.py` 本機伺服器（檔案白名單 + 跨來源隔離標頭）

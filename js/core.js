@@ -1,4 +1,6 @@
 // 核心：狀態、畫布檢視（縮放/平移）、歷史、AI 工作（進度/取消）、匯出
+import { mk } from './canvas.js';
+
 const HISTORY_MAX_ITEMS = 20;
 const HISTORY_MAX_BYTES = 256 * 1024 * 1024;
 const canvasBytes = (c) => c ? c.width * c.height * 4 : 0;
@@ -13,7 +15,7 @@ export const S = {
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 export const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-export function mk(w, h) { const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h)); return c; }
+export { mk };
 export function clone(c) { const n = mk(c.width, c.height); n.getContext('2d').drawImage(c, 0, 0); return n; }
 
 const cv = $('#cv'), ctx = cv.getContext('2d');
@@ -48,7 +50,9 @@ export async function runJob(title, fn) {
   };
   $('#jobTitle', box).textContent = title;
   setP(0, '準備中…');
+  const prevFocus = document.activeElement; // 對話框關閉後還原焦點
   box.classList.add('show');
+  $('#jobCancel', box).focus();
   $('#jobCancel', box).onclick = () => {
     if (!uiOpen || ac.signal.aborted) return;
     ac.abort();
@@ -72,6 +76,7 @@ export async function runJob(title, fn) {
     uiOpen = false;
     box.classList.remove('show');
     $('#jobCancel', box).onclick = null;
+    if (prevFocus?.isConnected) prevFocus.focus();
   }
 }
 
@@ -212,10 +217,12 @@ export function setImage(canvas) { // 載入新圖（清空歷史）
   S.orig = clone(canvas); S.doc = canvas; S.hist = []; S.redo = []; S.compare = null; lastSize = '';
   $('#empty').hidden = true; afterDocChange();
 }
-function trimHistory() {
-  let bytes = S.hist.reduce((n, c) => n + canvasBytes(c), 0);
-  while (S.hist.length > HISTORY_MAX_ITEMS || (S.hist.length > 1 && bytes > HISTORY_MAX_BYTES)) {
-    bytes -= canvasBytes(S.hist.shift());
+// 復原與重做堆疊共用容量上限：先丟最舊的復原紀錄，再丟最遠的重做紀錄；至少保留一筆
+export function trimHistory() {
+  while (S.hist.length > HISTORY_MAX_ITEMS) S.hist.shift();
+  const total = () => [...S.hist, ...S.redo].reduce((n, c) => n + canvasBytes(c), 0);
+  while (S.hist.length + S.redo.length > 1 && total() > HISTORY_MAX_BYTES) {
+    if (S.hist.length) S.hist.shift(); else S.redo.shift();
   }
 }
 export function commit(canvas) {

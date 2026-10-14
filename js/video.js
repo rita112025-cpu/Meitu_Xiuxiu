@@ -101,7 +101,9 @@ function blockAdditions(alphaData) { // BlockMore{BlockAddID=1, BlockAdditional=
 }
 
 // 逐格處理並輸出影片。frameFn(frameCanvas, index) -> canvas (outW×outH)，可為 async
-export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, signal, onProgress }) {
+// writable（選填）：FileSystemWritableFileStream。提供時直接串流寫入磁碟並回傳 blob: null；
+// 開啟與 close()/abort() 由呼叫端負責。
+export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, signal, onProgress, writable }) {
   if (!supported()) throw new Error('此瀏覽器不支援 WebCodecs，請使用最新版 Chrome 或 Edge');
   outW &= ~1; outH &= ~1;
   const isMp4 = format === 'mp4', total = Math.max(1, Math.floor(V.dur * fps)), big = Math.max(outW, outH) > 1920;
@@ -122,25 +124,34 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
     if (typeof AudioEncoder === 'undefined' || !(await AudioEncoder.isConfigSupported(acfg)).supported) { audio = null; note = '此瀏覽器無法編碼該聲音格式，輸出將沒有聲音（可改選 WebM 試試）。'; }
   } else note = '來源沒有可解碼的聲音。';
 
-  const target = new mod.ArrayBufferTarget();
+  const target = writable ? new mod.FileSystemWritableFileStreamTarget(writable) : new mod.ArrayBufferTarget();
   const mo = { target, video: isMp4 ? { codec: 'avc', width: outW, height: outH } : { codec: 'V_VP9', width: outW, height: outH, frameRate: fps, alpha: !!alpha } };
   // webm-muxer 會把 codec 字串原樣寫入 Matroska CodecID，必須使用 'A_OPUS'（寫成 'opus' 時瀏覽器無法播放該音軌）
   if (audio) mo.audio = { codec: isMp4 ? 'aac' : 'A_OPUS', numberOfChannels: ach, sampleRate: audio.sampleRate };
-  if (isMp4) mo.fastStart = 'in-memory';
+  // fastStart 'in-memory' 需要整個檔案留在記憶體；寫入磁碟時改為 false（moov 寫在檔尾，本機播放不受影響）
+  if (isMp4) mo.fastStart = writable ? false : 'in-memory';
   const muxer = new mod.Muxer(mo);
 
-  // 編碼結果先收集，最後依時間戳交錯寫入（確保影音同步、alpha 與顏色配對）
+  // 編碼結果立即寫入 muxer，不在記憶體中累積全部 chunk（muxer 會自行依時間戳交錯影音）。
+  // 透明影片：顏色與 alpha 兩個編碼器依相同順序輸出，各自排隊後一對一配對寫入。
   let err = null;
-  const vOut = [], aOut = [], alOut = [];
-  const venc = new VideoEncoder({ output: (c, m) => vOut.push([c, m]), error: (e) => (err = e) });
+  const guard = (fn) => (...a) => { try { fn(...a); } catch (e) { err ||= e; } };
+  const colorQ = [], alphaQ = [];
+  const writeAlphaPairs = () => {
+    while (colorQ.length && alphaQ.length) { const [c, m] = colorQ.shift(); muxer.addVideoChunk(c, { ...m, additions: blockAdditions(alphaQ.shift()) }); }
+  };
+  const venc = new VideoEncoder({
+    output: guard((c, m) => { if (alpha) { colorQ.push([c, m]); writeAlphaPairs(); } else muxer.addVideoChunk(c, m); }),
+    error: (e) => (err ||= e),
+  });
   venc.configure(vcfg);
   let alphaEnc = null;
   if (alpha) {
-    alphaEnc = new VideoEncoder({ output: (c) => { const d = new Uint8Array(c.byteLength); c.copyTo(d); alOut.push(d); }, error: (e) => (err = e) });
+    alphaEnc = new VideoEncoder({ output: guard((c) => { const d = new Uint8Array(c.byteLength); c.copyTo(d); alphaQ.push(d); writeAlphaPairs(); }), error: (e) => (err ||= e) });
     alphaEnc.configure({ ...vcfg, bitrate: Math.round(vcfg.bitrate / 3) });
   }
   let aenc = null, aPos = 0;
-  if (audio) { aenc = new AudioEncoder({ output: (c, m) => aOut.push([c, m]), error: (e) => (err = e) }); aenc.configure(acfg); }
+  if (audio) { aenc = new AudioEncoder({ output: guard((c, m) => muxer.addAudioChunk(c, m)), error: (e) => (err ||= e) }); aenc.configure(acfg); }
   const feedAudio = (until) => {
     if (!aenc) return;
     const sr = audio.sampleRate, end = Math.min(audio.length, Math.floor(until * sr)), chs = [...Array(ach).keys()].map((i) => audio.getChannelData(i));
@@ -181,19 +192,12 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
     feedAudio(total / fps);
     await venc.flush(); if (alphaEnc) await alphaEnc.flush(); if (aenc) await aenc.flush();
     if (err) throw err;
-    // 交錯寫入
-    let ai = 0;
-    for (let i = 0; i < vOut.length; i++) {
-      const [c, m] = vOut[i];
-      while (ai < aOut.length && aOut[ai][0].timestamp <= c.timestamp) { muxer.addAudioChunk(aOut[ai][0], aOut[ai][1]); ai++; }
-      muxer.addVideoChunk(c, alpha ? { ...m, additions: blockAdditions(alOut[i]) } : m);
-    }
-    for (; ai < aOut.length; ai++) muxer.addAudioChunk(aOut[ai][0], aOut[ai][1]);
+    if (colorQ.length || alphaQ.length) throw new Error('透明影片的顏色與透明度畫格數不一致，無法輸出');
     muxer.finalize();
   } finally {
     for (const e of [venc, alphaEnc, aenc]) { try { e?.close(); } catch { /* */ } }
   }
-  return { blob: new Blob([target.buffer], { type: isMp4 ? 'video/mp4' : 'video/webm' }), note };
+  return { blob: writable ? null : new Blob([target.buffer], { type: isMp4 ? 'video/mp4' : 'video/webm' }), note };
 }
 
 // 套用 alpha 並合成背景

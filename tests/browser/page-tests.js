@@ -416,9 +416,21 @@
     results.push(CANNOT('此瀏覽器不支援 WebCodecs 或 MediaRecorder，影音輸出測試未執行'));
   }
 
-  const runExport = async (V, fmt, name, expectAudio) => {
-    const got = await VD.exportVideo({ V, fps: 10, format: fmt, alpha: false, outW: 320, outH: 180, frameFn: async (f) => f });
-    const blob = got.blob;
+  // viaDisk：以 OPFS 的 FileSystemWritableFileStream 模擬「存到磁碟」（與 showSaveFilePicker 取得的串流同型別）
+  const runExport = async (V, fmt, name, expectAudio, viaDisk = false) => {
+    const opts = { V, fps: 10, format: fmt, alpha: false, outW: 320, outH: 180, frameFn: async (f) => f };
+    let got, blob;
+    if (viaDisk) {
+      const fh = await (await navigator.storage.getDirectory()).getFileHandle(`export-test.${fmt}`, { create: true });
+      const writable = await fh.createWritable();
+      try { got = await VD.exportVideo({ ...opts, writable }); await writable.close(); }
+      catch (e) { await writable.abort().catch(() => {}); throw e; }
+      check(got.blob === null, '寫入磁碟時不應另外回傳記憶體中的 blob');
+      blob = await fh.getFile();
+    } else {
+      got = await VD.exportVideo(opts);
+      blob = got.blob;
+    }
     check(blob.size > 1000, `${fmt} 輸出過小（${blob.size}B）`);
     const hasAudio = await hasAudioTrack(blob);
     if (expectAudio && got.note && /無法|沒有|無/.test(got.note)) return CANNOT(`${name}：編碼器不支援，${got.note}`);
@@ -458,6 +470,15 @@
           return runExport(V, fmt, `${audio ? '有聲' : '無聲'}→${fmt}`, audio);
         });
       }
+    }
+
+    for (const fmt of ['webm', 'mp4']) {
+      await run(`影音輸出：串流寫入磁碟 → ${fmt.toUpperCase()}（有聲）`, async () => {
+        if (!sources.audio) return CANNOT('此瀏覽器的 MediaRecorder 不支援 WebM 錄製');
+        if (!navigator.storage?.getDirectory) return CANNOT('此瀏覽器不支援 OPFS，無法模擬寫入磁碟');
+        const V = await loadFixture(sources.audio);
+        return runExport(V, fmt, `磁碟→${fmt}`, true, true);
+      });
     }
 
     await run('去水印：載入影片後框選並預覽，預覽尺寸與影格相同', async () => {

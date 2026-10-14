@@ -47,21 +47,50 @@ export const hasVideo = () => !!V;
 
 // ---------- 共用：輸出區塊 ----------
 const resultUrls = new Map();
+const canSaveToDisk = typeof globalThis.showSaveFilePicker === 'function';
 const outBlock = (id, allowMp4 = true) => `
   <h3>輸出</h3>
   <div class="row2"><label>格式 <select id="${id}Fmt"><option value="mp4"${allowMp4 ? '' : ' disabled'}>MP4（H.264）</option><option value="webm"${allowMp4 ? '' : ' selected'}>WebM（VP9）</option></select></label>
   <label>影格率 <select id="${id}Fps"><option value="0">原始（≤30）</option><option value="24">24</option><option value="30">30</option><option value="60">60</option></select></label></div>
+  ${canSaveToDisk ? `<label class="chk"><input type="checkbox" id="${id}Disk"> 邊處理邊存到磁碟（長影片、高解析度建議）</label>` : ''}
   <p class="hint">會保留原影片的聲音。處理時請保持此分頁在前景。</p>
   <button class="btn primary big" id="${id}Go">開始處理並輸出</button>
   <div id="${id}Res" class="result"></div>`;
 const pickFps = (id) => { const v = val(id + 'Fps'); return v || Math.min(30, V.fps); };
+
+// 勾選存到磁碟時開啟存檔視窗；必須是點擊後第一個 await（檔案選擇器需要使用者手勢）。
+// 回傳 { handle }（未勾選時 handle 為 null），使用者取消或失敗時回傳 null
+async function saveTarget(id, name, fmt) {
+  if (!canSaveToDisk || !$('#' + id + 'Disk')?.checked) return { handle: null };
+  try {
+    const mime = fmt === 'mp4' ? 'video/mp4' : 'video/webm';
+    return { handle: await globalThis.showSaveFilePicker({ suggestedName: name, types: [{ description: fmt.toUpperCase(), accept: { [mime]: ['.' + fmt] } }] }) };
+  } catch (e) {
+    if (e.name !== 'AbortError') toast('無法開啟存檔視窗：' + e.message, true);
+    return null;
+  }
+}
+// 有 handle 時串流寫入該檔案，完成後以磁碟上的 File 作為結果；失敗或取消時丟棄寫入中的內容
+async function exportTo(handle, opts) {
+  if (!handle) return VD.exportVideo(opts);
+  const writable = await handle.createWritable();
+  try {
+    const r = await VD.exportVideo({ ...opts, writable });
+    await writable.close();
+    return { ...r, blob: await handle.getFile(), saved: handle.name };
+  } catch (e) {
+    await writable.abort().catch(() => {});
+    throw e;
+  }
+}
 function showResult(id, r, name) {
   const old = resultUrls.get(id);
   if (old) URL.revokeObjectURL(old);
   const url = URL.createObjectURL(r.blob), el = $('#' + id + 'Res');
   resultUrls.set(id, url);
-  el.innerHTML = `<video controls src="${url}"></video><button class="btn primary" id="${id}Dl">下載 ${name}</button>${r.note ? `<p class="hint">${r.note}</p>` : ''}`;
-  $('#' + id + 'Dl').onclick = () => downloadBlob(r.blob, name);
+  el.innerHTML = `<video controls src="${url}"></video>${r.saved ? '<p class="hint" id="' + id + 'Saved"></p>' : `<button class="btn primary" id="${id}Dl">下載 ${name}</button>`}${r.note ? `<p class="hint">${r.note}</p>` : ''}`;
+  if (r.saved) $('#' + id + 'Saved').textContent = `已儲存為「${r.saved}」`;
+  else $('#' + id + 'Dl').onclick = () => downloadBlob(r.blob, name);
 }
 const needVideo = () => (V ? true : (toast('請先到「新增」載入影片', true), false));
 const supportMsg = () => (VD.supported() ? '' : '<p class="warn">此瀏覽器不支援 WebCodecs，無法輸出影片，請改用最新版 Chrome / Edge。</p>');
@@ -113,12 +142,14 @@ vtools.vwm = (() => {
       };
       $('#wGo').onclick = async () => {
         if (!needVideo()) return; if (!rects.length) return toast('請先框選水印位置', true);
-        const ms = masks(), fps = pickFps('w'), ow = even(V.w), oh = even(V.h), fmt = $('#wFmt').value;
+        const fmt = $('#wFmt').value, name = 'xiuxiu-去水印.' + fmt, dest = await saveTarget('w', name, fmt);
+        if (!dest) return;
+        const ms = masks(), fps = pickFps('w'), ow = even(V.w), oh = even(V.h);
         const r = await runJob('生成中', async ({ signal, progress }) => {
           await AI.getSession('migan', { signal, onProgress: progress });
-          return VD.exportVideo({ V, fps, format: fmt, alpha: false, outW: ow, outH: oh, signal, onProgress: progress, frameFn: async (f) => fitTo(await fill(f, ms, { signal }), ow, oh) });
+          return exportTo(dest.handle, { V, fps, format: fmt, alpha: false, outW: ow, outH: oh, signal, onProgress: progress, frameFn: async (f) => fitTo(await fill(f, ms, { signal }), ow, oh) });
         });
-        if (r) showResult('w', r, 'xiuxiu-去水印.' + fmt);
+        if (r) showResult('w', r, name);
         await gotoT(V.video.currentTime);
       };
     },
@@ -163,15 +194,17 @@ vtools.vmatte = (() => {
       };
       $('#mGo').onclick = async () => {
         if (!needVideo()) return; const { bg, color } = bgOf(), stab = $('#mStab').checked, fps = pickFps('m'), ow = even(V.w), oh = even(V.h), fmt = $('#mFmt').value, alpha = bg === 'transparent';
+        const name = 'xiuxiu-去背.' + fmt, dest = await saveTarget('m', name, fmt);
+        if (!dest) return;
         const r = await runJob('生成中', async ({ signal, progress }) => {
           const m = await AI.createVideoMatter({ signal, onProgress: progress }); m.reset();
           let prev = null;
-          return VD.exportVideo({
+          return exportTo(dest.handle, {
             V, fps, format: fmt, alpha, outW: ow, outH: oh, signal, onProgress: progress,
             frameFn: async (f) => { const a = await m.step(f); if (stab) { a.alpha = VD.stabilizeAlpha(prev, a); prev = a.alpha.slice(); } return fitTo(VD.applyMatte(f, a, bg, color), ow, oh); },
           });
         });
-        if (r) showResult('m', r, 'xiuxiu-去背.' + fmt);
+        if (r) showResult('m', r, name);
         await gotoT(V.video.currentTime);
       };
     },
@@ -207,14 +240,16 @@ vtools.vup = (() => {
       info();
       $('#uGo').onclick = async () => {
         if (!needVideo()) return; const d = dims(), m = $('input[name=um]:checked').value, modelKey = m === 'std' ? (d.f <= 2 ? 'std2' : 'std4') : m, fmt = $('#uFmt').value, fps = pickFps('u');
+        const name = `xiuxiu-放大${d.w}x${d.h}.${fmt}`, dest = await saveTarget('u', name, fmt);
+        if (!dest) return;
         const r = await runJob('生成中', async ({ signal, progress }) => {
           await AI.getSession(modelKey, { signal, onProgress: progress });
-          return VD.exportVideo({
+          return exportTo(dest.handle, {
             V, fps, format: fmt, alpha: false, outW: d.w, outH: d.h, signal, onProgress: progress,
             frameFn: async (f) => fitTo(await AI.upscale(f, { model: modelKey, scale: d.f <= 2 ? 2 : 4, signal }), d.w, d.h),
           });
         });
-        if (r) showResult('u', r, `xiuxiu-放大${d.w}x${d.h}.${fmt}`);
+        if (r) showResult('u', r, name);
         await gotoT(V.video.currentTime);
       };
     },

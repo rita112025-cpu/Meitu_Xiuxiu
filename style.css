@@ -4,6 +4,7 @@
   color-scheme:dark;
   --bg:#100d14;--stage:#0d0a11;--surface:#15111a;--surface-2:#1d1724;--surface-3:#2a2233;
   --line:#342c3d;--line-strong:#4b4056;--tx:#fffaf4;--mut:#c7bbcc;--quiet:#9c8ea4;
+  --btn-hover:#2b2f39;--btn-hover-line:#596070;--seg-line:#292c34;--toast-bg:#292c35;--bad-bg:#48262a;--bad-line:#754047;
   --paper:#f3eadf;--paper-2:#e9dccd;--ink:#211723;
   --ac:#ff7259;--ac-hover:#ff856f;--ac-soft:rgba(255,114,89,.14);--bad:#ff8275;--ok:#73d5ad;
   --display:"Fraunces","Noto Serif TC","PMingLiU",serif;
@@ -66,7 +67,7 @@ kbd{background:var(--surface-3);border:1px solid var(--line-strong);border-radiu
 .hint{color:var(--mut);font-size:18px;margin:10px 0;line-height:1.65}
 .warn{color:var(--bad);font-size:18px;line-height:1.6}
 .btn{display:block;width:100%;background:var(--surface-3);border:1px solid var(--line-strong);border-radius:var(--r-sm);padding:9px 12px;margin:9px 0;text-align:center;font-weight:650;transition:background .16s,border-color .16s,transform .12s}
-.btn:hover:not(:disabled){background:#2b2f39;border-color:#596070}
+.btn:hover:not(:disabled){background:var(--btn-hover);border-color:var(--btn-hover-line)}
 .btn:active:not(:disabled){transform:translateY(1px)}
 .btn.primary{background:var(--ac);border-color:var(--ac);color:#20151d}
 .btn.primary:hover:not(:disabled){background:var(--ac-hover);border-color:var(--ac-hover)}
@@ -89,7 +90,7 @@ textarea{resize:vertical;margin-bottom:7px;min-height:76px}
 .chip small{color:var(--quiet);margin-left:6px;font-variant-numeric:tabular-nums}
 .chip:hover{background:var(--surface-3);border-color:var(--line-strong);color:var(--tx)}
 .chip.on{border-color:var(--ac);background:var(--ac-soft);color:#ffb4a6}
-.seg{display:flex;background:var(--bg);border:1px solid #292c34;border-radius:10px;padding:3px;gap:3px}
+.seg{display:flex;background:var(--bg);border:1px solid var(--seg-line);border-radius:10px;padding:3px;gap:3px}
 .seg button{flex:1;border:0;background:none;border-radius:7px;padding:7px;color:var(--mut)}
 .seg button.on{background:var(--surface-3);color:var(--tx)}
 .radio{display:block;border:1px solid var(--line);border-radius:var(--r-sm);padding:9px 11px;margin:7px 0;cursor:pointer;color:var(--mut)}
@@ -139,9 +140,9 @@ textarea{resize:vertical;margin-bottom:7px;min-height:76px}
 .bar i{display:block;height:100%;width:0;background:var(--ac)}
 .pct{font-size:17px;color:var(--mut);margin-bottom:11px;font-variant-numeric:tabular-nums}
 #job .btn{width:auto;display:inline-block;padding:7px 28px}
-#toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,18px);background:#292c35;border:0;padding:10px 18px;border-radius:99px;opacity:0;pointer-events:none;transition:opacity .2s,transform .25s cubic-bezier(.2,.8,.2,1);z-index:120;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,.32)}
+#toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,18px);background:var(--toast-bg);border:0;padding:10px 18px;border-radius:99px;opacity:0;pointer-events:none;transition:opacity .2s,transform .25s cubic-bezier(.2,.8,.2,1);z-index:120;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,.32)}
 #toast.show{opacity:1;transform:translate(-50%,0)}
-#toast.bad{background:#48262a;border-color:#754047}
+#toast.bad{background:var(--bad-bg);border-color:var(--bad-line)}
 
 @media (max-width:1050px){
   .brand small{display:none}

@@ -1,5 +1,7 @@
 // AI 推論層：onnxruntime-web (WebGPU 優先，失敗退回 WASM)。所有影像資料只留在瀏覽器；只有模型權重會從網路下載並快取。
-const ORT_BASE = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+import { mk, abortCheck } from './canvas.js';
+
+const ORT_BASE ='https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 const HF = 'https://huggingface.co/';
 
 export const MODELS = {
@@ -14,7 +16,15 @@ export const MODELS = {
   art: { name: 'Upscayl 數位藝術', url: HF + 'RekluzLabs/realesrgan_anime6b.onnx/resolve/d5377ec6204295bca15f0a7967579dc5e25e2ae6/realesrgan_anime6b.onnx', size: 18, scale: 4, tile: 192 },
 };
 
-export const hasGPU = typeof navigator !== 'undefined' && !!navigator.gpu;
+// 只看 navigator.gpu 是否存在，在 GPU 被封鎖的機器上會誤判；必須取得 adapter 才算可用。結果快取，只檢測一次
+let gpuP = null;
+export function detectGPU() {
+  gpuP ||= (async () => {
+    try { return !!(await globalThis.navigator?.gpu?.requestAdapter()); }
+    catch { return false; }
+  })();
+  return gpuP;
+}
 const sessions = new Map();
 const loading = new Map(); // 進行中的模型載入，避免並行呼叫重複下載與建立 session
 let ortP;
@@ -22,22 +32,26 @@ function getOrt() {
   // 失敗時清除快取，下次呼叫可以重新嘗試載入（否則一次網路失敗會讓 AI 功能直到重新整理前都不能用）
   ortP ||= import(ORT_BASE + 'ort.webgpu.min.mjs').then((o) => {
     o.env.wasm.wasmPaths = ORT_BASE;
-    o.env.wasm.numThreads = 1;
+    // 多執行緒 WASM 需要跨來源隔離（SharedArrayBuffer）；未隔離時只能單執行緒
+    o.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.max(1, Math.min(4, globalThis.navigator?.hardwareConcurrency || 1)) : 1;
     return o;
   }).catch((e) => { ortP = null; throw e; });
   return ortP;
 }
 
-const mk = (w, h) => { const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h)); return c; };
-const abortCheck = (s) => { if (s?.aborted) throw new DOMException('Aborted', 'AbortError'); };
 
 async function fetchModel(key, onProgress, signal) {
+  abortCheck(signal);
   const m = MODELS[key];
   let cache;
   try {
     cache = await caches.open('xiuxiu-models-v1');
     const hit = await cache.match(m.url);
-    if (hit) return await hit.arrayBuffer();
+    if (hit) {
+      const buf = await hit.arrayBuffer();
+      abortCheck(signal);
+      return buf;
+    }
   } catch { /* 無快取可用 */ }
   const res = await fetch(m.url, { signal });
   if (!res.ok) throw new Error(`模型下載失敗 (${res.status})`);
@@ -52,9 +66,13 @@ async function fetchModel(key, onProgress, signal) {
     got += value.length;
     onProgress?.(Math.min(1, got / total), `下載 ${m.name} 模型 ${(got / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB（僅首次）`);
   }
-  const blob = new Blob(chunks);
-  try { await cache?.put(m.url, new Response(blob)); } catch { /* 忽略 */ }
-  return await blob.arrayBuffer();
+  // 合併成單一緩衝區後立即釋放分段資料，記憶體峰值約為模型大小的 2 倍（不經過 Blob 再複製）
+  const all = new Uint8Array(got);
+  let off = 0;
+  for (const c of chunks) { all.set(c, off); off += c.length; }
+  chunks.length = 0;
+  try { await cache?.put(m.url, new Response(all)); } catch { /* 忽略 */ }
+  return all.buffer;
 }
 
 async function createSession(key, buf, eps) {
@@ -63,14 +81,21 @@ async function createSession(key, buf, eps) {
   return { s, ep: eps[0], ort };
 }
 
+function reportBackend(ep) {
+  const gpu = ep === 'webgpu';
+  globalThis.dispatchEvent?.(new CustomEvent('xiuxiu:backend-change', { detail: { gpu } }));
+}
+
 async function loadSession(key, { onProgress, signal }) {
   const buf = await fetchModel(key, onProgress, signal);
   abortCheck(signal);
   onProgress?.(1, `載入 ${MODELS[key].name}…`);
+  const gpu = await detectGPU();
   let entry;
-  try { entry = await createSession(key, buf, hasGPU ? ['webgpu', 'wasm'] : ['wasm']); }
+  try { entry = await createSession(key, buf, gpu ? ['webgpu', 'wasm'] : ['wasm']); }
   catch (e) { console.warn('WebGPU 建立失敗，改用 WASM', e); entry = await createSession(key, buf, ['wasm']); }
   sessions.set(key, entry);
+  reportBackend(entry.ep);
   return entry;
 }
 
@@ -109,20 +134,22 @@ export async function getSession(key, { onProgress, signal } = {}) {
 // 執行推論；WebGPU 執行失敗時自動退回 WASM 重試一次
 async function run(key, feedsFn, opts) {
   let ent = await getSession(key, opts);
-  try { return await ent.s.run(feedsFn(ent.ort), undefined); }
+  try { return await ent.s.run(feedsFn(ent.ort)); }
   catch (e) {
     if (ent.ep === 'wasm') throw e;
     console.warn('WebGPU 推論失敗，改用 WASM', e);
     sessions.delete(key);
     try { await ent.s.release?.(); } catch (re) { console.warn('釋放 WebGPU session 失敗', re); }
-    const buf = await fetchModel(key);
+    const buf = await fetchModel(key, opts?.onProgress, opts?.signal);
+    abortCheck(opts?.signal);
     ent = await createSession(key, buf, ['wasm']);
     sessions.set(key, ent);
+    reportBackend(ent.ep);
     return await ent.s.run(feedsFn(ent.ort));
   }
 }
 
-export const backendName = () => (hasGPU ? 'WebGPU' : 'WASM(CPU)');
+export const backendName = async () => ((await detectGPU()) ? 'WebGPU' : 'WASM(CPU)');
 
 // ---------- 影像工具 ----------
 function bbox(maskCanvas) {
@@ -136,9 +163,10 @@ const r8 = (v) => Math.max(64, Math.round(v / 8) * 8);
 
 // ---------- MI-GAN 消除 ----------
 // maskCanvas：要消除處 alpha>0。回傳新的 canvas（與 src 同尺寸）。
-export async function inpaint(src, maskCanvas, { signal, onProgress } = {}) {
+// box（選填）：遮罩的外接矩形 {x,y,w,h}。呼叫端已知時傳入，可省下每次逐像素掃描遮罩的成本。
+export async function inpaint(src, maskCanvas, { signal, onProgress, box } = {}) {
   const W = src.width, H = src.height;
-  const bb = bbox(maskCanvas);
+  const bb = box ?? bbox(maskCanvas);
   if (!bb) return null;
   const pad = 6;
   const ctxPad = Math.round(Math.max(bb.w, bb.h) * 0.6 + 48);
@@ -154,7 +182,7 @@ export async function inpaint(src, maskCanvas, { signal, onProgress } = {}) {
   const mC = mk(tw, th), mc = mC.getContext('2d');
   mc.filter = `blur(${pad / 2}px)`;
   mc.drawImage(maskCanvas, cx0, cy0, cw, ch, 0, 0, tw, th);
-  // 把遮罩往外擴一點，避免殘邊
+  // 把遮罩自己疊一次：模糊後的半透明邊緣 alpha 由 a 變成 2a−a²，讓邊緣更實一些，避免殘邊
   mc.filter = 'none'; mc.globalAlpha = 1;
   mc.drawImage(mC, 0, 0);
   const id = ic.getImageData(0, 0, tw, th).data, md = mc.getImageData(0, 0, tw, th).data;
@@ -227,6 +255,12 @@ export async function matteImage(src, { signal, onProgress, model = 'u2net' } = 
   return { alpha };
 }
 
+// 任一像素 alpha < 250 即視為含透明。必須逐像素檢查：抽樣會漏掉稀疏的透明區
+export function hasTransparency(rgba) {
+  for (let i = 3; i < rgba.length; i += 4) if (rgba[i] < 250) return true;
+  return false;
+}
+
 // ---------- Real-ESRGAN / Upscayl 放大 ----------
 export async function upscale(src, { model, scale, signal, onProgress } = {}) {
   const m = MODELS[model], ms = m.scale;
@@ -263,9 +297,7 @@ export async function upscale(src, { model, scale, signal, onProgress } = {}) {
     onProgress?.(++done / (nx * ny), `AI 放大 ${done}/${nx * ny}`);
   }
   // 保留透明度（Alpha 以一般縮放處理）
-  let hasAlpha = false;
-  for (let i = 3; i < sd.length; i += 4 * 7) if (sd[i] < 250) { hasAlpha = true; break; }
-  if (hasAlpha) {
+  if (hasTransparency(sd)) {
     const a = mk(W * scale, H * scale), ac = a.getContext('2d');
     ac.imageSmoothingQuality = 'high';
     ac.drawImage(src, 0, 0, W * scale, H * scale);

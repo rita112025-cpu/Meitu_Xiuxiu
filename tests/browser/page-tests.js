@@ -82,6 +82,91 @@
     check(S.doc.width === 160, '重置應可被 Undo');
   });
 
+  await run('runJob：顯示時焦點移到取消鈕，結束後還原焦點', async () => {
+    const btn = $('#btnFit'); btn.focus();
+    let release;
+    const p = core.runJob('F', () => new Promise((r) => { release = r; }));
+    await sleep(20);
+    check(document.activeElement === $('#jobCancel'), '工作顯示時焦點未移到取消鈕');
+    check($('#top').inert && $('main').inert, '工作顯示時背景介面未設為 inert');
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    $('#jobCancel').dispatchEvent(tab);
+    check(tab.defaultPrevented && document.activeElement === $('#jobCancel'), 'Tab 未被限制在工作對話框內');
+    release('x'); await p;
+    check(!$('#top').inert && !$('main').inert, '工作結束後背景介面的 inert 未還原');
+    check(document.activeElement === btn, '工作結束後未還原焦點');
+  });
+
+  await run('文字：文字工具開啟時載入新圖，未套用的舊文字不會被套用到新圖', async () => {
+    await openPattern(320, 200);
+    main.selectTool('text');
+    try {
+      document.querySelector('#panel [data-k="標題"]').click(); // 新增一段尚未套用的標題
+      await openPattern(160, 100);
+      await sleep(30);
+      check(S.hist.length === 0, `換圖後產生了 ${S.hist.length} 筆歷史，舊圖的文字被套用到新圖`);
+    } finally { main.selectTool('new'); }
+  });
+
+  await run('文字：待套用的文字在同一張圖上按復原後仍保留', async () => {
+    await openPattern(320, 200);
+    main.selectTool('adjust'); // 先裁切，產生一筆可復原的歷史
+    S.tool.leave(); S.tool.enter(); S.tool.leave();
+    S.tool.down({ x: 40, y: 20 }); S.tool.move({ x: 200, y: 120 }); S.tool.up();
+    $('#aCrop').click();
+    main.selectTool('text');
+    try {
+      document.querySelector('#panel [data-k="標題"]').click();
+      $('#btnUndo').click();
+      check(S.doc.width === 320, '復原未生效');
+      check($('#tText').value === '輸入標題', '復原後待套用的文字被清空');
+    } finally { main.selectTool('new'); }
+  });
+
+  await run('後端：徽章顯示的 WebGPU / CPU 與 detectGPU() 的結果一致', async () => {
+    const AI = await import('/js/ai.js');
+    const gpu = await AI.detectGPU();
+    await waitFor(() => $('#badge').textContent !== '檢測中…', 5000, '徽章更新');
+    const want = gpu ? 'WebGPU' : 'CPU（較慢）';
+    check($('#badge').textContent === want, `徽章 ${$('#badge').textContent}，預期 ${want}`);
+    dispatchEvent(new CustomEvent('xiuxiu:backend-change', { detail: { gpu: false } }));
+    check($('#badge').textContent === 'CPU（較慢）' && $('#badge').classList.contains('warn'), 'WASM fallback 後徽章未切換為 CPU');
+    dispatchEvent(new CustomEvent('xiuxiu:backend-change', { detail: { gpu } }));
+  });
+
+  await run('調色：一鍵換色後調整滑桿與換色目標，預覽更新且套用後只產生一筆歷史', async () => {
+    await openPattern(320, 200);
+    main.selectTool('color');
+    try {
+      $('#kPick').click(); // 進入吸色模式
+      S.tool.down({ x: 100, y: 50 });
+      await waitFor(() => S.preview, 5000, '吸色後的預覽');
+      $('#kTo').value = '#ff0000'; $('#kTo').dispatchEvent(new Event('input'));
+      await sleep(30);
+      $('#c_bri').value = 20; $('#c_bri').dispatchEvent(new Event('input'));
+      await sleep(30);
+      check(S.preview && S.preview.width === 320 && S.preview.height === 200, '換色後的預覽尺寸錯誤');
+      check(S.hist.length === 0, '預覽時不應寫入歷史');
+      $('#kApply').click();
+      check(S.hist.length === 1, `套用後歷史筆數 ${S.hist.length}，預期 1`);
+    } finally { main.selectTool('new'); }
+  });
+
+  await run('消除：傳入外接矩形 box 的結果與逐像素掃描遮罩完全相同', async () => {
+    const AI = await import('/js/ai.js');
+    const src = document.createElement('canvas'); src.width = 320; src.height = 200;
+    const sg = src.getContext('2d'), id = sg.createImageData(320, 200);
+    for (let p = 0; p < 320 * 200; p++) { id.data[p * 4] = (p % 320) % 256; id.data[p * 4 + 1] = Math.floor(p / 320) % 256; id.data[p * 4 + 2] = 128; id.data[p * 4 + 3] = 255; }
+    sg.putImageData(id, 0, 0);
+    const mask = document.createElement('canvas'); mask.width = 320; mask.height = 200;
+    const mg = mask.getContext('2d'); mg.fillStyle = '#fff'; mg.fillRect(97, 77, 46, 36);
+    const a = await AI.inpaint(src, mask);
+    const b = await AI.inpaint(src, mask, { box: { x: 97, y: 77, w: 46, h: 36 } });
+    check(a && b, 'inpaint 回傳 null');
+    const da = a.getContext('2d').getImageData(0, 0, 320, 200).data, db = b.getContext('2d').getImageData(0, 0, 320, 200).data;
+    check(da.every((v, i) => v === db[i]), 'box 版本與逐像素掃描的結果不同');
+  });
+
   // ---------- 2. PNG / JPG / WebP 匯出 ----------
   await run('匯出：PNG、JPG、WebP 的檔頭與尺寸正確', async () => {
     await openPattern(160, 100);
@@ -374,6 +459,17 @@
         });
       }
     }
+
+    await run('去水印：載入影片後框選並預覽，預覽尺寸與影格相同', async () => {
+      if (!sources.silent) return CANNOT('此瀏覽器的 MediaRecorder 不支援 WebM 錄製');
+      await window.openFiles([sources.silent]);
+      check(S.mode === 'video' && S.tool?.label === '影片去水印', '未切換到影片去水印');
+      S.tool.down({ x: 40, y: 30 }); S.tool.move({ x: 120, y: 70 }); S.tool.up();
+      $('#wPrev').click();
+      await waitFor(() => S.compare !== null, 60000, '去水印預覽');
+      check(S.preview && S.preview.width === S.doc.width && S.preview.height === S.doc.height, '預覽尺寸與影格不符');
+      main.selectTool('new');
+    });
 
     await run('影音輸出：中途取消後編碼器與影格全部關閉，且不再處理新影格', async () => {
       if (!sources.audio) return CANNOT('無來源影片');

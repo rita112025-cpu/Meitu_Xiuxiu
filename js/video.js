@@ -1,7 +1,7 @@
 // 影片處理：WebCodecs 逐格編碼 + 保留聲音（全部在瀏覽器內，不上傳）
-const MUX = { mp4: 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.mjs', webm: 'https://cdn.jsdelivr.net/npm/webm-muxer@5.0.3/build/webm-muxer.mjs' };
-const mk = (w, h) => { const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h)); return c; };
-const abortCheck = (s) => { if (s?.aborted) throw new DOMException('Aborted', 'AbortError'); };
+import { mk, abortCheck } from './canvas.js';
+
+const MUX ={ mp4: 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.mjs', webm: 'https://cdn.jsdelivr.net/npm/webm-muxer@5.0.3/build/webm-muxer.mjs' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const supported = () => typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined';

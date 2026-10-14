@@ -4,8 +4,10 @@ cd /d "%~dp0"
 title Qingxiu local server - close this window to stop
 
 set "PY="
-where python >nul 2>nul && set "PY=python"
-if not defined PY where py >nul 2>nul && set "PY=py"
+rem Verify the interpreter really runs (the Microsoft Store "python" stub is found by "where" but cannot run).
+for %%C in (python py) do if not defined PY (
+  %%C -c "import sys; sys.exit(0 if sys.version_info[0] >= 3 else 1)" >nul 2>nul && set "PY=%%C"
+)
 if not defined PY (
   echo Python 3 not found. Please install Python 3 first: https://www.python.org/downloads/
   pause
@@ -37,7 +39,7 @@ if defined BROWSER (
   start "" /b cmd /c "timeout /t 2 /nobreak >nul & start %URL%"
 )
 
-%PY% -m http.server %PORT% --bind 127.0.0.1
+%PY% serve.py %PORT%
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" (
   echo.

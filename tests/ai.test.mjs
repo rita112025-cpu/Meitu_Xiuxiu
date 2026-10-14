@@ -1,7 +1,7 @@
 // AI 模型載入的回歸測試：並行載入去重、下載失敗後可重試（以假的 fetch 模擬，不連網）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { getSession, MODELS } from '../js/ai.js';
+import { getSession, MODELS, hasTransparency } from '../js/ai.js';
 
 const savedFetch = globalThis.fetch;
 
@@ -60,6 +60,14 @@ test('所有呼叫者都取消時，共用的下載會被中止', { timeout: 500
   await new Promise((r) => setTimeout(r, 10));
   globalThis.fetch = savedFetch;
   assert.equal(aborted, true, '最後一個呼叫者取消後，底層 fetch 應被中止');
+});
+
+test('hasTransparency 逐像素檢查，不會漏掉稀疏的透明像素', () => {
+  const rgba = new Uint8ClampedArray(4 * 1000).fill(255);
+  assert.equal(hasTransparency(rgba), false, '全不透明應回傳 false');
+  // 第 501 個像素的 alpha 不在舊的抽樣位置（每 7 個像素取一次）上
+  rgba[501 * 4 + 3] = 0;
+  assert.equal(hasTransparency(rgba), true, '單一透明像素也必須被偵測到');
 });
 
 test('模型網址固定為 commit SHA，不使用浮動的 main', () => {

@@ -219,13 +219,14 @@ function drawText(g, it) {
   else if (st === 'retro') { g.fillStyle = it.color2; fillAll(sz * 0.07, sz * 0.07); g.lineWidth = sz * 0.07; g.strokeStyle = '#fff7e6'; strokeAll(); g.fillStyle = it.color; fillAll(); }
   g.restore();
 }
+const measureCtx = mk(1, 1).getContext('2d'); // 量測文字寬度用，重複使用
 function textBox(it) {
-  const g = mk(1, 1).getContext('2d'); g.font = `${it.bold ? 700 : 400} ${it.size}px ${it.font}`;
+  const g = measureCtx; g.font = `${it.bold ? 700 : 400} ${it.size}px ${it.font}`;
   const lines = it.text.split('\n');
   return { x: it.x, y: it.y, w: Math.max(...lines.map((l) => g.measureText(l).width), it.size * 0.5), h: lines.length * it.size * 1.25 };
 }
 tools.text = (() => {
-  let items = [], sel = -1, drag = null;
+  let items = [], sel = -1, drag = null, owner = null; // owner：待套用文字所屬的圖片（載入新圖時 S.orig 會換成新物件）
   const cur = () => items[sel];
   function add(kind) {
     const W = S.doc.width, H = S.doc.height;
@@ -281,9 +282,13 @@ tools.text = (() => {
       $('#tApply').onclick = bake;
       sync();
     },
-    enter() { sync(); },
+    enter() { owner = S.orig; sync(); },
     leave() { bake(); },
-    onDocChange() { if (!S.doc) return; sync(); },
+    onDocChange() {
+      if (!S.doc) return;
+      if (S.orig !== owner) { items = []; sel = -1; owner = S.orig; } // 載入了新圖：舊圖的待套用文字不得帶到新圖
+      sync();
+    },
     down(p) {
       sel = -1;
       for (let i = items.length - 1; i >= 0; i--) { const b = textBox(items[i]); if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) { sel = i; drag = { ox: p.x - items[i].x, oy: p.y - items[i].y }; break; } }
@@ -446,7 +451,8 @@ tools.enhance = (() => {
   const modelKey = (m, sc) => (m === 'std' ? (sc === 2 ? 'std2' : 'std4') : m);
   const info = () => {
     const sc = +$('#hScale .on').dataset.v, W = S.doc.width * sc, H = S.doc.height * sc, bad = Math.max(W, H) > LIM || W * H > 1.2e8;
-    $('#hInfo').innerHTML = `輸出尺寸：<b>${W} × ${H}</b>${bad ? '<br><span class="warn">超過瀏覽器上限（單邊 8192 px），請先縮小圖片或改選 2 倍。</span>' : ''}`;
+    const slow = sc === 2 && $('input[name=hm]:checked').value !== 'std' ? '<br>此模型只有 4 倍版本，選 2 倍會先以 4 倍運算再縮小，耗時與 4 倍相同。' : '';
+    $('#hInfo').innerHTML = `輸出尺寸：<b>${W} × ${H}</b>${slow}${bad ? '<br><span class="warn">超過瀏覽器上限（單邊 8192 px），請先縮小圖片或改選 2 倍。</span>' : ''}`;
     $('#hRun').disabled = bad;
   };
   return {
@@ -463,6 +469,7 @@ tools.enhance = (() => {
       <p class="hint">完成後可拖曳畫面中的對比線檢視前後差異。</p>`,
     bind() {
       $('#hScale').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; $$('#hScale button').forEach((x) => x.classList.toggle('on', x === b)); info(); };
+      $$('input[name=hm]').forEach((r) => (r.onchange = info));
       info();
       $('#hRun').onclick = async () => {
         const sc = +$('#hScale .on').dataset.v, key = modelKey($('input[name=hm]:checked').value, sc), before = S.doc;
@@ -489,21 +496,30 @@ tools.color = (() => {
   const D = { bri: 0, con: 0, sat: 0, hue: 0, temp: 0, fade: 0, vig: 0, blur: 0 };
   let adj = { ...D }, fcss = '', rc = { h0: null, s0: 0, v0: 0, to: '#ff3b3b', tol: 30, on: false }, picking = false, repl = null;
   const SL = [['bri', '亮度', -100, 100], ['con', '對比', -100, 100], ['sat', '飽和度', -100, 100], ['hue', '色相', -180, 180], ['temp', '色溫（冷↔暖）', -100, 100], ['fade', '褪色', 0, 100], ['vig', '暗角', 0, 100], ['blur', '模糊', 0, 10]];
-  const rgb2hsv = (r, g, b) => { r /= 255; g /= 255; b /= 255; const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; let h = 0; if (d) { if (mx === r) h = ((g - b) / d + 6) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; } return [h, mx ? d / mx : 0, mx]; };
-  const hsv2rgb = (h, s, v) => { const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c; const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x]; return [(r + m) * 255, (g + m) * 255, (b + m) * 255]; };
+  // 結果寫入 o（可傳入重複使用的暫存陣列，避免逐像素配置新陣列）
+  const rgb2hsv = (r, g, b, o = []) => { r /= 255; g /= 255; b /= 255; const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; let h = 0; if (d) { if (mx === r) h = ((g - b) / d + 6) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; } o[0] = h; o[1] = mx ? d / mx : 0; o[2] = mx; return o; };
+  const hsv2rgb = (h, s, v, o = []) => { const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c; let r = 0, g = 0, b = 0; if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; } else if (h < 180) { g = c; b = x; } else if (h < 240) { g = x; b = c; } else if (h < 300) { r = x; b = c; } else { r = c; b = x; } o[0] = (r + m) * 255; o[1] = (g + m) * 255; o[2] = (b + m) * 255; return o; };
   const hex2rgb = (x) => [1, 3, 5].map((i) => parseInt(x.slice(i, i + 2), 16));
   function replaceColor(src) {
     const W = src.width, H = src.height, c = clone(src), g = c.getContext('2d'), id = g.getImageData(0, 0, W, H), d = id.data;
     const [h1, s1, v1] = rgb2hsv(...hex2rgb(rc.to)), { h0, s0, v0, tol } = rc, sr = clamp(s1 / Math.max(s0, 0.1), 0, 2), vr = clamp(v1 / Math.max(v0, 0.1), 0.3, 1.7);
+    const hsv = [0, 0, 0], rgb = [0, 0, 0]; // 迴圈內重複使用的暫存陣列
     for (let i = 0; i < d.length; i += 4) {
-      const [h, s, v] = rgb2hsv(d[i], d[i + 1], d[i + 2]); if (s < 0.1) continue;
+      rgb2hsv(d[i], d[i + 1], d[i + 2], hsv); const h = hsv[0], s = hsv[1], v = hsv[2]; if (s < 0.1) continue;
       let df = Math.abs(h - h0); df = Math.min(df, 360 - df); if (df > tol) continue;
       const w = 1 - clamp((df - tol * 0.6) / (tol * 0.4), 0, 1), nh = (h + (h1 - h0) * w + 360) % 360;
-      const [r, gg, b] = hsv2rgb(nh, clamp(s * (1 + (sr - 1) * w), 0, 1), clamp(v * (1 + (vr - 1) * w * 0.6), 0, 1));
-      d[i] = r; d[i + 1] = gg; d[i + 2] = b;
+      hsv2rgb(nh, clamp(s * (1 + (sr - 1) * w), 0, 1), clamp(v * (1 + (vr - 1) * w * 0.6), 0, 1), rgb);
+      d[i] = rgb[0]; d[i + 1] = rgb[1]; d[i + 2] = rgb[2];
     }
     g.putImageData(id, 0, 0); return c;
   }
+  // 換色結果快取：滑桿只改調色參數時不必重算換色，只有換色參數或畫面改變時才重算
+  let repKey = '', repDoc = null, repCanvas = null;
+  const replacedBase = () => {
+    const key = [rc.h0, rc.s0, rc.v0, rc.to, rc.tol].join('|');
+    if (repDoc !== S.doc || repKey !== key) { repDoc = S.doc; repKey = key; repCanvas = replaceColor(S.doc); }
+    return repCanvas;
+  };
   function colorize(src) {
     const W = src.width, H = src.height, c = mk(W, H), g = c.getContext('2d');
     g.filter = `${fcss} brightness(${1 + adj.bri / 100}) contrast(${1 + adj.con / 100}) saturate(${1 + adj.sat / 100}) hue-rotate(${adj.hue}deg) blur(${(adj.blur * Math.max(W, H)) / 1500}px)`.trim();
@@ -517,8 +533,7 @@ tools.color = (() => {
   const update = raf(() => {
     if (!S.doc) return;
     if (!changed()) { S.preview = null; return render(); }
-    let base = S.doc;
-    if (rc.on && rc.h0 != null) base = replaceColor(base);
+    const base = rc.on && rc.h0 != null ? replacedBase() : S.doc;
     S.preview = colorize(base); if (S.compare) { S.compare = null; refreshHist(); } render();
   });
   const syncUI = () => SL.forEach(([k]) => setSl('c_' + k, adj[k]));
@@ -543,7 +558,7 @@ tools.color = (() => {
       $('#kCancel').onclick = () => { this.clear(); update(); };
       $('#kApply').onclick = () => { if (S.preview) { const c = S.preview; this.clear(); commit(c); } };
     },
-    clear() { adj = { ...D }; fcss = ''; rc.h0 = null; rc.on = false; if ($('#c_bri')) { syncUI(); $('#kSw').style.background = ''; } },
+    clear() { adj = { ...D }; fcss = ''; rc.h0 = null; rc.on = false; repDoc = repCanvas = null; if ($('#c_bri')) { syncUI(); $('#kSw').style.background = ''; } },
     leave() { this.clear(); S.preview = null; },
     onDocChange() { this.clear(); },
     down(p) {

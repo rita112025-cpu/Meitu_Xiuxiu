@@ -43,6 +43,7 @@ function getOrt() {
 async function fetchModel(key, onProgress, signal) {
   abortCheck(signal);
   const m = MODELS[key];
+  if (!m) throw new Error(`未知模型：${key}`);
   let cache;
   try {
     cache = await caches.open('xiuxiu-models-v1');
@@ -58,14 +59,25 @@ async function fetchModel(key, onProgress, signal) {
   const total = +res.headers.get('content-length') || m.size * 1e6;
   const reader = res.body.getReader();
   const chunks = [];
-  let got = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    got += value.length;
-    onProgress?.(Math.min(1, got / total), `下載 ${m.name} 模型 ${(got / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB（僅首次）`);
+  let got = 0, complete = false;
+  try {
+    for (;;) {
+      abortCheck(signal);
+      const { done, value } = await reader.read();
+      abortCheck(signal);
+      if (done) { complete = true; break; }
+      chunks.push(value);
+      got += value.length;
+      onProgress?.(Math.min(1, got / total), `下載 ${m.name} 模型 ${(got / 1e6).toFixed(0)} / ${(total / 1e6).toFixed(0)} MB（僅首次）`);
+    }
+  } finally {
+    if (!complete) {
+      try { await reader.cancel(); } catch { /* 保留原始下載錯誤 */ }
+    }
+    reader.releaseLock();
   }
+  if (!got) throw new Error('模型下載內容為空，請重試');
+  abortCheck(signal);
   // 合併成單一緩衝區後立即釋放分段資料，記憶體峰值約為模型大小的 2 倍（不經過 Blob 再複製）
   const all = new Uint8Array(got);
   let off = 0;
@@ -93,7 +105,15 @@ async function loadSession(key, { onProgress, signal }) {
   const gpu = await detectGPU();
   let entry;
   try { entry = await createSession(key, buf, gpu ? ['webgpu', 'wasm'] : ['wasm']); }
-  catch (e) { console.warn('WebGPU 建立失敗，改用 WASM', e); entry = await createSession(key, buf, ['wasm']); }
+  catch (e) {
+    abortCheck(signal);
+    if (!gpu) throw e;
+    console.warn('WebGPU 建立失敗，改用 WASM', e); entry = await createSession(key, buf, ['wasm']);
+  }
+  if (signal?.aborted) {
+    try { await entry.s.release?.(); } catch { /* 已取消的工作仍須回報 AbortError */ }
+    abortCheck(signal);
+  }
   sessions.set(key, entry);
   reportBackend(entry.ep);
   return entry;
@@ -102,32 +122,50 @@ async function loadSession(key, { onProgress, signal }) {
 // 同一模型的並行呼叫共用同一個載入。每個呼叫者只會因自己的 signal 取消；
 // 只有所有呼叫者都取消時，共用的載入才會被中止。失敗後移除，讓下一次呼叫可以重試。
 export async function getSession(key, { onProgress, signal } = {}) {
+  abortCheck(signal);
+  if (!MODELS[key]) throw new Error(`未知模型：${key}`);
   if (sessions.has(key)) return sessions.get(key);
-  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   let job = loading.get(key);
+  if (job?.ctl.signal.aborted) job = null;
   if (!job) {
     const ctl = new AbortController();
-    job = { ctl, waiters: 0 };
-    job.promise = (async () => {
-      try { return await loadSession(key, { onProgress, signal: ctl.signal }); }
-      finally { if (loading.get(key) === job) loading.delete(key); }
-    })();
+    job = { ctl, listeners: new Set(), lastProgress: null };
+    // 延至微任務開始，讓第一個呼叫者也能收到初始進度。
+    job.promise = Promise.resolve().then(() => loadSession(key, {
+      signal: ctl.signal,
+      onProgress: (...args) => {
+        job.lastProgress = args;
+        for (const notify of job.listeners) notify(...args);
+      },
+    })).finally(() => { if (loading.get(key) === job) loading.delete(key); });
     loading.set(key, job);
   }
-  job.waiters++;
   return new Promise((res, rej) => {
     let settled = false;
+    // 每個呼叫保留獨立訂閱，即使兩個呼叫傳入同一個 callback。
+    const notify = (...args) => { try { onProgress?.(...args); } catch (e) { console.warn('模型進度通知失敗', e); } };
+    const cleanup = () => {
+      settled = true;
+      job.listeners.delete(notify);
+      signal?.removeEventListener('abort', onAbort);
+    };
     const onAbort = () => {
       if (settled) return;
-      settled = true; job.waiters--;
-      if (job.waiters === 0) job.ctl.abort(); // 最後一個呼叫者離開，才真正中止下載
+      cleanup();
+      if (!job.listeners.size) {
+        job.ctl.abort();
+        if (loading.get(key) === job) loading.delete(key);
+      }
       rej(new DOMException('Aborted', 'AbortError'));
     };
+    job.listeners.add(notify);
     signal?.addEventListener('abort', onAbort, { once: true });
     job.promise.then(
-      (v) => { if (!settled) { settled = true; job.waiters--; signal?.removeEventListener('abort', onAbort); res(v); } },
-      (e) => { if (!settled) { settled = true; job.waiters--; signal?.removeEventListener('abort', onAbort); rej(e); } },
+      (v) => { if (!settled) { cleanup(); res(v); } },
+      (e) => { if (!settled) { cleanup(); rej(e); } },
     );
+    if (signal?.aborted) onAbort();
+    else if (job.lastProgress) notify(...job.lastProgress);
   });
 }
 
@@ -374,3 +412,4 @@ export async function createVideoMatter({ signal, onProgress, longSide = 768 } =
   };
   return m;
 }
+

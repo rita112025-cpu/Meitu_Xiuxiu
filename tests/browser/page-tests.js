@@ -165,6 +165,28 @@
     check(a && b, 'inpaint 回傳 null');
     const da = a.getContext('2d').getImageData(0, 0, 320, 200).data, db = b.getContext('2d').getImageData(0, 0, 320, 200).data;
     check(da.every((v, i) => v === db[i]), 'box 版本與逐像素掃描的結果不同');
+    // staticMask：第一次建立快取、第二次命中快取，兩者都要與未快取的結果相同
+    for (let k = 0; k < 2; k++) {
+      const c = await AI.inpaint(src, mask, { box: { x: 97, y: 77, w: 46, h: 36 }, staticMask: true });
+      const dc = c.getContext('2d').getImageData(0, 0, 320, 200).data;
+      check(da.every((v, i) => v === dc[i]), `staticMask 第 ${k + 1} 次的結果與未快取不同`);
+    }
+  });
+
+  await run('影片去背：applyMatte 使用畫布池時重複使用畫布，且每次結果正確', async () => {
+    const { canvasPool } = await import('/js/canvas.js');
+    const frame = document.createElement('canvas'); frame.width = 64; frame.height = 32;
+    const fg = frame.getContext('2d'); fg.fillStyle = '#ff0000'; fg.fillRect(0, 0, 64, 32);
+    const matte = (top) => { const alpha = new Float32Array(64 * 32); for (let i = 0; i < alpha.length; i++) alpha[i] = (i < 64 * 16) === top ? 1 : 0; return { alpha, w: 64, h: 32 }; };
+    const pool = canvasPool();
+    const a = VD.applyMatte(frame, matte(true), 'green', null, pool);
+    check(same(pixel(a, 10, 4), [255, 0, 0]) && same(pixel(a, 10, 28), [0, 177, 64]), `第一次合成錯誤 ${pixel(a, 10, 4)} / ${pixel(a, 10, 28)}`);
+    const b = VD.applyMatte(frame, matte(false), 'green', null, pool);
+    check(a === b, '畫布池未重複使用輸出畫布');
+    check(same(pixel(b, 10, 4), [0, 177, 64]) && same(pixel(b, 10, 28), [255, 0, 0]), `重複使用後合成錯誤 ${pixel(b, 10, 4)} / ${pixel(b, 10, 28)}`);
+    const t = VD.applyMatte(frame, matte(true), 'transparent', null, pool);
+    check(t.getContext('2d').getImageData(10, 28, 1, 1).data[3] === 0 && t.getContext('2d').getImageData(10, 4, 1, 1).data[3] === 255, '透明背景的 alpha 錯誤');
+    check(VD.applyMatte(frame, matte(true), 'green') !== VD.applyMatte(frame, matte(true), 'green'), '未傳畫布池時應回傳新畫布');
   });
 
   // ---------- 2. PNG / JPG / WebP 匯出 ----------
@@ -480,6 +502,21 @@
         return runExport(V, fmt, `磁碟→${fmt}`, true, true);
       });
     }
+    await run('影音輸出：透明 WebM（顏色與 alpha 逐格配對後寫入）可播放且時長正確', async () => {
+      if (!sources.audio) return CANNOT('無來源影片');
+      const V = await loadFixture(sources.audio);
+      const { canvasPool } = await import('/js/canvas.js');
+      const pool = canvasPool(), alpha = new Float32Array(320 * 180).fill(0.5);
+      const got = await VD.exportVideo({ V, fps: 10, format: 'webm', alpha: true, outW: 320, outH: 180, frameFn: async (f) => VD.applyMatte(f, { alpha, w: 320, h: 180 }, 'transparent', null, pool) });
+      check(got.blob.size > 1000, `輸出過小（${got.blob.size}B）`);
+      const url = URL.createObjectURL(got.blob);
+      const v = document.createElement('video'); v.muted = true; v.src = url;
+      try {
+        await new Promise((r, j) => { v.onloadeddata = r; v.onerror = () => j(new Error('透明 WebM 無法播放')); });
+        check(Number.isFinite(v.duration) && Math.abs(v.duration - 2) < 0.6, `時長 ${v.duration}`);
+      } finally { URL.revokeObjectURL(url); }
+      return { detail: `${got.blob.size}B` };
+    });
 
     await run('去水印：載入影片後框選並預覽，預覽尺寸與影格相同', async () => {
       if (!sources.silent) return CANNOT('此瀏覽器的 MediaRecorder 不支援 WebM 錄製');

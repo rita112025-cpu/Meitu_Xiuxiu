@@ -41,6 +41,20 @@ python serve.py 8080
 
 然後用最新版 Chrome / Edge 開 http://localhost:8080 。建議有 WebGPU（沒有時自動退回 CPU，會很慢）。
 
+## 選用：用本機 ComfyUI 加速影片放大
+
+有 NVIDIA 顯示卡並已安裝 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 時，「影片放大」可以改由本機 ComfyUI 處理整段影片（解碼、放大、合成都在 CUDA 上，保留聲音），通常比瀏覽器逐格處理快很多。
+
+1. ComfyUI 安裝 [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) 節點。
+2. 把放大模型（例如 `RealESRGAN_x4plus.pth`）放進 ComfyUI 的 `models/upscale_models/`。
+3. 啟動 ComfyUI（預設 `127.0.0.1:8188`），再用 `python serve.py` 開啟本頁。
+4. 在「影片放大」的「運算位置」選「本機 ComfyUI」，並選擇放大模型。
+
+- 頁面透過 `serve.py` 的 `/comfy/` 同源代理呼叫 ComfyUI，不需要開 ComfyUI 的 CORS。代理只轉送必要的 API，並拒絕其他網站發出的請求。ComfyUI 不在預設位置時，可用環境變數 `XIUXIU_COMFY` 指定，例如 `http://127.0.0.1:8189`。
+- 影片只在本機的瀏覽器與 ComfyUI 之間傳遞，不會上傳到外部；上傳的影片與輸出的結果會留在 ComfyUI 的 `input/`、`output/xiuxiu/` 資料夾，需要時請自行清理。
+- 長影片會依輸出尺寸分批處理（VideoHelperSuite Meta Batch），避免一次把所有影格放進記憶體。
+- 偵測不到 ComfyUI、缺少 VideoHelperSuite 或沒有放大模型時，該選項會停用並說明原因，影片放大照常使用瀏覽器運算。
+
 ## 使用方式
 
 - 從「新增」載入檔案，也可拖曳檔案或貼上圖片。
@@ -90,5 +104,6 @@ python serve.py 8080
 - `js/ai.js` onnxruntime-web 推論（MI-GAN、U²-Net、Real-ESRGAN 分塊、RVM）
 - `js/tools-image.js` 新增 / 調整 / 文字 / 消除圖 / 摳圖 / 變清晰 / 調色
 - `js/tools-video.js`、`js/video.js` 影片去水印 / 去背 / 放大（WebCodecs 逐格編碼，保留聲音；透明 WebM 為自製 VP9 alpha 封裝）
-- `js/canvas.js` 共用的畫布建立與取消檢查
-- `serve.py` 本機伺服器（檔案白名單 + 跨來源隔離標頭）
+- `js/comfy.js` 選用的本機 ComfyUI 後端（偵測、影片放大工作流程、分批排程、取消）
+- `js/canvas.js` 共用的畫布建立、逐格重複使用的畫布池與取消檢查
+- `serve.py` 本機伺服器（檔案白名單 + 跨來源隔離標頭 + `/comfy/` 同源代理）

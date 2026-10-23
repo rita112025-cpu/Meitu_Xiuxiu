@@ -101,7 +101,9 @@ function blockAdditions(alphaData) { // BlockMore{BlockAddID=1, BlockAdditional=
 }
 
 // 逐格處理並輸出影片。frameFn(frameCanvas, index) -> canvas (outW×outH)，可為 async
-export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, signal, onProgress }) {
+// writable（選填）：FileSystemWritableFileStream。提供時直接串流寫入磁碟並回傳 blob: null；
+// 開啟與 close()/abort() 由呼叫端負責。
+export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, signal, onProgress, writable }) {
   if (!supported()) throw new Error('此瀏覽器不支援 WebCodecs，請使用最新版 Chrome 或 Edge');
   outW &= ~1; outH &= ~1;
   const isMp4 = format === 'mp4', total = Math.max(1, Math.floor(V.dur * fps)), big = Math.max(outW, outH) > 1920;
@@ -122,11 +124,12 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
     if (typeof AudioEncoder === 'undefined' || !(await AudioEncoder.isConfigSupported(acfg)).supported) { audio = null; note = '此瀏覽器無法編碼該聲音格式，輸出將沒有聲音（可改選 WebM 試試）。'; }
   } else note = '來源沒有可解碼的聲音。';
 
-  const target = new mod.ArrayBufferTarget();
+  const target = writable ? new mod.FileSystemWritableFileStreamTarget(writable) : new mod.ArrayBufferTarget();
   const mo = { target, video: isMp4 ? { codec: 'avc', width: outW, height: outH } : { codec: 'V_VP9', width: outW, height: outH, frameRate: fps, alpha: !!alpha } };
   // webm-muxer 會把 codec 字串原樣寫入 Matroska CodecID，必須使用 'A_OPUS'（寫成 'opus' 時瀏覽器無法播放該音軌）
   if (audio) mo.audio = { codec: isMp4 ? 'aac' : 'A_OPUS', numberOfChannels: ach, sampleRate: audio.sampleRate };
-  if (isMp4) mo.fastStart = 'in-memory';
+  // fastStart 'in-memory' 需要整個檔案留在記憶體；寫入磁碟時改為 false（moov 寫在檔尾，本機播放不受影響）
+  if (isMp4) mo.fastStart = writable ? false : 'in-memory';
   const muxer = new mod.Muxer(mo);
 
   // 編碼結果一產生就寫入 muxer，不在記憶體另外保留一份；muxer 依時間戳交錯影音。
@@ -194,7 +197,7 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
   } finally {
     for (const e of [venc, alphaEnc, aenc]) { try { e?.close(); } catch { /* */ } }
   }
-  return { blob: new Blob([target.buffer], { type: isMp4 ? 'video/mp4' : 'video/webm' }), note };
+  return { blob: writable ? null : new Blob([target.buffer], { type: isMp4 ? 'video/mp4' : 'video/webm' }), note };
 }
 
 // 套用 alpha 並合成背景

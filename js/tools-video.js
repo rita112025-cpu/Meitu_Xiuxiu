@@ -2,6 +2,8 @@
 import { S, $, $$, mk, clone, clamp, toast, runJob, render, setImage, setCompare, downloadBlob, fit, refreshHist } from './core.js';
 import * as AI from './ai.js';
 import * as VD from './video.js';
+import * as COMFY from './comfy.js';
+import { canvasPool } from './canvas.js';
 import { sl } from './tools-image.js';
 
 export const vtools = {};
@@ -9,7 +11,13 @@ export let V = null;
 const val = (id) => +$('#' + id).value;
 const fmtT = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}.${String(Math.floor((t % 1) * 10))}`;
 const even = (v) => Math.max(2, Math.round(v) & ~1);
-const fitTo = (c, w, h) => { if (c.width === w && c.height === h) return c; const o = mk(w, h), g = o.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(c, 0, 0, w, h); return o; };
+// pool（選填）：逐格輸出時傳入，重複使用同一張輸出畫布；回傳的畫布只在下一格之前有效
+const fitTo = (c, w, h, pool) => {
+  if (c.width === w && c.height === h) return c;
+  const o = pool ? pool('fit', w, h) : mk(w, h), g = o.getContext('2d');
+  g.clearRect(0, 0, w, h); g.imageSmoothingQuality = 'high'; g.drawImage(c, 0, 0, w, h);
+  return o;
+};
 
 // ---------- 載入與時間軸 ----------
 let playing = false;
@@ -85,7 +93,7 @@ vtools.vwm = (() => {
     for (let i = 0; i < ms.length; i++) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       s = (await AI.inpaint(s, ms[i].canvas, {
-        signal, box: ms[i].box,
+        signal, box: ms[i].box, staticMask: true,
         onProgress: (p, label) => onProgress?.((i + (p ?? 0)) / ms.length, label),
       })) || s;
     }
@@ -113,10 +121,10 @@ vtools.vwm = (() => {
       };
       $('#wGo').onclick = async () => {
         if (!needVideo()) return; if (!rects.length) return toast('請先框選水印位置', true);
-        const ms = masks(), fps = pickFps('w'), ow = even(V.w), oh = even(V.h), fmt = $('#wFmt').value;
+        const ms = masks(), fps = pickFps('w'), ow = even(V.w), oh = even(V.h), fmt = $('#wFmt').value, pool = canvasPool();
         const r = await runJob('生成中', async ({ signal, progress }) => {
           await AI.getSession('migan', { signal, onProgress: progress });
-          return VD.exportVideo({ V, fps, format: fmt, alpha: false, outW: ow, outH: oh, signal, onProgress: progress, frameFn: async (f) => fitTo(await fill(f, ms, { signal }), ow, oh) });
+          return VD.exportVideo({ V, fps, format: fmt, alpha: false, outW: ow, outH: oh, signal, onProgress: progress, frameFn: async (f) => fitTo(await fill(f, ms, { signal }), ow, oh, pool) });
         });
         if (r) showResult('w', r, 'xiuxiu-去水印.' + fmt);
         await gotoT(V.video.currentTime);
@@ -166,9 +174,10 @@ vtools.vmatte = (() => {
         const r = await runJob('生成中', async ({ signal, progress }) => {
           const m = await AI.createVideoMatter({ signal, onProgress: progress }); m.reset();
           let prev = null;
+          const pool = canvasPool();
           return VD.exportVideo({
             V, fps, format: fmt, alpha, outW: ow, outH: oh, signal, onProgress: progress,
-            frameFn: async (f) => { const a = await m.step(f); if (stab) { a.alpha = VD.stabilizeAlpha(prev, a); prev = a.alpha.slice(); } return fitTo(VD.applyMatte(f, a, bg, color), ow, oh); },
+            frameFn: async (f) => { const a = await m.step(f); if (stab) { a.alpha = VD.stabilizeAlpha(prev, a); prev = a.alpha.slice(); } return fitTo(VD.applyMatte(f, a, bg, color, pool), ow, oh, pool); },
           });
         });
         if (r) showResult('m', r, 'xiuxiu-去背.' + fmt);
@@ -186,32 +195,67 @@ vtools.vup = (() => {
     if (mx * f > 3840 || mn * f > 2160) f = Math.min(3840 / mx, 2160 / mn);
     return { sc, f, w: even(V.w * f), h: even(V.h * f), capped: f < sc };
   };
+  const useComfy = () => $('input[name=uEng]:checked')?.value === 'comfy';
   const info = () => {
     if (!V) return ($('#uInfo').textContent = '請先載入影片');
-    const d = dims();
-    const slow = d.f <= 2 && $('input[name=um]:checked').value !== 'std' ? '<br>此模型只有 4 倍版本，2 倍會先以 4 倍運算再縮小，耗時與 4 倍相同。' : '';
-    $('#uInfo').innerHTML = `輸出：<b>${d.w} × ${d.h}</b>${d.capped ? '（已限制在 4K 上限）' : ''}${slow}<br><span class="hint">AI 放大每格都很耗時，長影片請預留較多時間。</span>`;
+    const d = dims(), comfy = useComfy();
+    $('#uWebOpt').hidden = comfy; $('#uComfyOpt').hidden = !comfy;
+    const slow = !comfy && d.f <= 2 && $('input[name=um]:checked').value !== 'std' ? '<br>此模型只有 4 倍版本，2 倍會先以 4 倍運算再縮小，耗時與 4 倍相同。' : '';
+    const tip = comfy ? '由本機 ComfyUI 以顯示卡處理整段影片，處理期間可以切換分頁。' : 'AI 放大每格都很耗時，長影片請預留較多時間。';
+    $('#uInfo').innerHTML = `輸出：<b>${d.w} × ${d.h}</b>${d.capped ? '（已限制在 4K 上限）' : ''}${slow}<br><span class="hint">${tip}</span>`;
+  };
+  // 偵測本機 ComfyUI；偵測不到或沒有放大模型時停用該選項，維持瀏覽器運算
+  const detectComfy = async () => {
+    const radio = $('input[name=uEng][value=comfy]'), msg = $('#uComfyMsg'), sel = $('#uComfyModel');
+    radio.disabled = true; msg.textContent = '偵測中…';
+    const st = await COMFY.probe();
+    if (!radio.isConnected) return;
+    const models = st?.upscaleModels ?? [];
+    if (!st) msg.textContent = '未偵測到。請先啟動 ComfyUI（需安裝 VideoHelperSuite），並以 serve.py 開啟本頁';
+    else if (!models.length) msg.textContent = '已連線，但 ComfyUI 的 models/upscale_models 資料夾沒有放大模型';
+    else {
+      radio.disabled = false; msg.textContent = `已連線，可用 ${models.length} 個放大模型，速度通常比瀏覽器快很多`;
+      const keep = sel.value;
+      sel.innerHTML = models.map((m) => `<option>${m.replace(/[&<>"]/g, (ch) => `&#${ch.charCodeAt(0)};`)}</option>`).join('');
+      sel.value = models.includes(keep) ? keep : (models.find((m) => /x4plus\b/i.test(m)) ?? models[0]);
+    }
+    if (radio.disabled && radio.checked) { $('input[name=uEng][value=web]').checked = true; }
+    info();
   };
   return {
     label: '影片放大', icon: 'sparkle',
     html: () => `${supportMsg()}
       <h3>放大倍率（上限 4K）</h3><div class="seg" id="uScale"><button data-v="2">2 倍</button><button class="on" data-v="4">4 倍</button></div>
+      <h3>運算位置</h3>
+      <label class="radio"><input type="radio" name="uEng" value="web" checked> <b>瀏覽器</b><small>使用 WebGPU，不需另外安裝</small></label>
+      <label class="radio"><input type="radio" name="uEng" value="comfy" disabled> <b>本機 ComfyUI</b><small id="uComfyMsg">偵測中…</small></label>
+      <button class="btn" id="uComfyRetry">重新偵測 ComfyUI</button>
+      <div id="uComfyOpt" hidden><h3>放大模型</h3><select id="uComfyModel"></select></div>
+      <div id="uWebOpt">
       <h3>AI 模型</h3>
       <label class="radio"><input type="radio" name="um" value="fast" checked> <b>Real-ESRGAN 快速</b><small>影片建議使用</small></label>
       <label class="radio"><input type="radio" name="um" value="std"> <b>Upscayl 標準</b><small>細節最好，非常慢</small></label>
       <label class="radio"><input type="radio" name="um" value="art"> <b>Upscayl 數位藝術</b><small>動畫、插畫</small></label>
+      </div>
       <p id="uInfo"></p>${outBlock('u')}`,
     bind() {
       $('#uScale').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; $$('#uScale button').forEach((x) => x.classList.toggle('on', x === b)); info(); };
-      $$('input[name=um]').forEach((r) => (r.onchange = info));
+      $$('input[name=um], input[name=uEng]').forEach((r) => (r.onchange = info));
+      $('#uComfyRetry').onclick = detectComfy;
       info();
+      detectComfy();
       $('#uGo').onclick = async () => {
         if (!needVideo()) return; const d = dims(), m = $('input[name=um]:checked').value, modelKey = m === 'std' ? (d.f <= 2 ? 'std2' : 'std4') : m, fmt = $('#uFmt').value, fps = pickFps('u');
+        const comfy = useComfy(), comfyModel = $('#uComfyModel').value;
+        const pool = canvasPool();
         const r = await runJob('生成中', async ({ signal, progress }) => {
+          if (comfy) {
+            return COMFY.upscaleVideo({ file: V.file, model: comfyModel, fps, outW: d.w, outH: d.h, format: fmt, frames: Math.ceil(V.dur * fps), signal, onProgress: progress });
+          }
           await AI.getSession(modelKey, { signal, onProgress: progress });
           return VD.exportVideo({
             V, fps, format: fmt, alpha: false, outW: d.w, outH: d.h, signal, onProgress: progress,
-            frameFn: async (f) => fitTo(await AI.upscale(f, { model: modelKey, scale: d.f <= 2 ? 2 : 4, signal }), d.w, d.h),
+            frameFn: async (f) => fitTo(await AI.upscale(f, { model: modelKey, scale: d.f <= 2 ? 2 : 4, signal }), d.w, d.h, pool),
           });
         });
         if (r) showResult('u', r, `xiuxiu-放大${d.w}x${d.h}.${fmt}`);

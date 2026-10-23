@@ -129,18 +129,26 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
   if (isMp4) mo.fastStart = 'in-memory';
   const muxer = new mod.Muxer(mo);
 
-  // 編碼結果先收集，最後依時間戳交錯寫入（確保影音同步、alpha 與顏色配對）
+  // 編碼結果一產生就寫入 muxer，不在記憶體另外保留一份；muxer 依時間戳交錯影音。
+  // 透明輸出時顏色與 alpha 兩個編碼器各自依序輸出，以佇列逐格配對後再寫入。
   let err = null;
-  const vOut = [], aOut = [], alOut = [];
-  const venc = new VideoEncoder({ output: (c, m) => vOut.push([c, m]), error: (e) => (err = e) });
+  const guard = (fn) => (...a) => { try { fn(...a); } catch (e) { err ||= e; } };
+  const colorQ = [], alphaQ = [];
+  const flushAlpha = () => {
+    while (colorQ.length && alphaQ.length) { const [c, m] = colorQ.shift(); muxer.addVideoChunk(c, { ...m, additions: blockAdditions(alphaQ.shift()) }); }
+  };
+  const venc = new VideoEncoder({
+    output: guard((c, m) => { if (alpha) { colorQ.push([c, m]); flushAlpha(); } else muxer.addVideoChunk(c, m); }),
+    error: (e) => (err = e),
+  });
   venc.configure(vcfg);
   let alphaEnc = null;
   if (alpha) {
-    alphaEnc = new VideoEncoder({ output: (c) => { const d = new Uint8Array(c.byteLength); c.copyTo(d); alOut.push(d); }, error: (e) => (err = e) });
+    alphaEnc = new VideoEncoder({ output: guard((c) => { const d = new Uint8Array(c.byteLength); c.copyTo(d); alphaQ.push(d); flushAlpha(); }), error: (e) => (err = e) });
     alphaEnc.configure({ ...vcfg, bitrate: Math.round(vcfg.bitrate / 3) });
   }
   let aenc = null, aPos = 0;
-  if (audio) { aenc = new AudioEncoder({ output: (c, m) => aOut.push([c, m]), error: (e) => (err = e) }); aenc.configure(acfg); }
+  if (audio) { aenc = new AudioEncoder({ output: guard((c, m) => muxer.addAudioChunk(c, m)), error: (e) => (err = e) }); aenc.configure(acfg); }
   const feedAudio = (until) => {
     if (!aenc) return;
     const sr = audio.sampleRate, end = Math.min(audio.length, Math.floor(until * sr)), chs = [...Array(ach).keys()].map((i) => audio.getChannelData(i));
@@ -181,14 +189,7 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
     feedAudio(total / fps);
     await venc.flush(); if (alphaEnc) await alphaEnc.flush(); if (aenc) await aenc.flush();
     if (err) throw err;
-    // 交錯寫入
-    let ai = 0;
-    for (let i = 0; i < vOut.length; i++) {
-      const [c, m] = vOut[i];
-      while (ai < aOut.length && aOut[ai][0].timestamp <= c.timestamp) { muxer.addAudioChunk(aOut[ai][0], aOut[ai][1]); ai++; }
-      muxer.addVideoChunk(c, alpha ? { ...m, additions: blockAdditions(alOut[i]) } : m);
-    }
-    for (; ai < aOut.length; ai++) muxer.addAudioChunk(aOut[ai][0], aOut[ai][1]);
+    if (colorQ.length || alphaQ.length) throw new Error('透明影片的顏色與透明度影格數不一致，無法輸出');
     muxer.finalize();
   } finally {
     for (const e of [venc, alphaEnc, aenc]) { try { e?.close(); } catch { /* */ } }
@@ -198,14 +199,19 @@ export async function exportVideo({ V, fps, format, alpha, outW, outH, frameFn, 
 
 // 套用 alpha 並合成背景
 // a = {alpha: Float32Array, w, h}；bg: 'transparent'|'green'|'white'|'blur'|'color'
-export function applyMatte(frame, a, bg, color) {
-  const W = frame.width, H = frame.height, mc = mk(a.w, a.h), id = new ImageData(a.w, a.h);
-  for (let i = 0, n = a.w * a.h; i < n; i++) { id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = 255; id.data[i * 4 + 3] = Math.max(0, Math.min(255, a.alpha[i] * 255)); }
-  mc.getContext('2d').putImageData(id, 0, 0);
-  const fgc = mk(W, H), fx = fgc.getContext('2d');
+// pool（選填，canvasPool()）：逐格輸出時傳入以重複使用畫布；此時回傳的畫布只在下一次呼叫前有效
+export function applyMatte(frame, a, bg, color, pool) {
+  const W = frame.width, H = frame.height, get = (k, w, h) => (pool ? pool(k, w, h) : mk(w, h));
+  const mc = get('matte', a.w, a.h), mx = mc.getContext('2d'), id = mx.createImageData(a.w, a.h), d = id.data;
+  for (let i = 0, n = a.w * a.h; i < n; i++) { const p = i * 4; d[p] = d[p + 1] = d[p + 2] = 255; d[p + 3] = Math.max(0, Math.min(255, a.alpha[i] * 255)); }
+  mx.putImageData(id, 0, 0);
+  const fgc = get('fg', W, H), fx = fgc.getContext('2d');
+  fx.globalCompositeOperation = 'source-over'; fx.clearRect(0, 0, W, H);
   fx.drawImage(frame, 0, 0); fx.globalCompositeOperation = 'destination-in'; fx.imageSmoothingQuality = 'high'; fx.drawImage(mc, 0, 0, W, H);
+  fx.globalCompositeOperation = 'source-over';
   if (bg === 'transparent') return fgc;
-  const out = mk(W, H), g = out.getContext('2d');
+  const out = get('bg', W, H), g = out.getContext('2d');
+  g.clearRect(0, 0, W, H);
   if (bg === 'blur') { const m = Math.max(W, H); g.filter = `blur(${m / 60}px)`; g.drawImage(frame, -m * 0.03, -m * 0.03, W + m * 0.06, H + m * 0.06); g.filter = 'none'; }
   else { g.fillStyle = bg === 'green' ? '#00b140' : bg === 'white' ? '#ffffff' : color; g.fillRect(0, 0, W, H); }
   g.drawImage(fgc, 0, 0);

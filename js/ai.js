@@ -200,9 +200,33 @@ function bbox(maskCanvas) {
 const r8 = (v) => Math.max(64, Math.round(v / 8) * 8);
 
 // ---------- MI-GAN 消除 ----------
+// 遮罩的前處理（縮放後的模型遮罩、羽化貼回用的柔邊遮罩）只取決於遮罩與裁切範圍。
+// 影片去水印每格用同一張遮罩，以 WeakMap 快取，遮罩畫布被回收時快取一起釋放。
+const maskCache = new WeakMap();
+function prepMask(maskCanvas, { cx0, cy0, cw, ch, tw, th, pad }, cache) {
+  const key = `${cx0},${cy0},${cw},${ch},${tw},${th}`;
+  const hit = cache ? maskCache.get(maskCanvas) : null;
+  if (hit?.key === key) return hit;
+  const mC = mk(tw, th), mc = mC.getContext('2d');
+  mc.filter = `blur(${pad / 2}px)`;
+  mc.drawImage(maskCanvas, cx0, cy0, cw, ch, 0, 0, tw, th);
+  // 把遮罩自己疊一次：模糊後的半透明邊緣 alpha 由 a 變成 2a−a²，讓邊緣更實一些，避免殘邊
+  mc.filter = 'none'; mc.globalAlpha = 1;
+  mc.drawImage(mC, 0, 0);
+  const md = mc.getImageData(0, 0, tw, th).data, n = tw * th, msk = new Uint8Array(n);
+  for (let i = 0; i < n; i++) msk[i] = md[i * 4 + 3] > 8 ? 0 : 255; // MI-GAN：0 = 要補的洞，255 = 已知
+  const soft = mk(cw, ch), sc = soft.getContext('2d');
+  sc.filter = 'blur(1.5px)';
+  sc.drawImage(maskCanvas, cx0, cy0, cw, ch, 0, 0, cw, ch);
+  const r = { key, msk, soft };
+  if (cache) maskCache.set(maskCanvas, r);
+  return r;
+}
+
 // maskCanvas：要消除處 alpha>0。回傳新的 canvas（與 src 同尺寸）。
 // box（選填）：遮罩的外接矩形 {x,y,w,h}。呼叫端已知時傳入，可省下每次逐像素掃描遮罩的成本。
-export async function inpaint(src, maskCanvas, { signal, onProgress, box } = {}) {
+// staticMask（選填）：遮罩在多次呼叫間不會被修改（例如影片每格共用），可快取遮罩前處理。
+export async function inpaint(src, maskCanvas, { signal, onProgress, box, staticMask = false } = {}) {
   const W = src.width, H = src.height;
   const bb = box ?? bbox(maskCanvas);
   if (!bb) return null;
@@ -217,19 +241,13 @@ export async function inpaint(src, maskCanvas, { signal, onProgress, box } = {})
   const inC = mk(tw, th), ic = inC.getContext('2d');
   ic.imageSmoothingQuality = 'high';
   ic.drawImage(src, cx0, cy0, cw, ch, 0, 0, tw, th);
-  const mC = mk(tw, th), mc = mC.getContext('2d');
-  mc.filter = `blur(${pad / 2}px)`;
-  mc.drawImage(maskCanvas, cx0, cy0, cw, ch, 0, 0, tw, th);
-  // 把遮罩自己疊一次：模糊後的半透明邊緣 alpha 由 a 變成 2a−a²，讓邊緣更實一些，避免殘邊
-  mc.filter = 'none'; mc.globalAlpha = 1;
-  mc.drawImage(mC, 0, 0);
-  const id = ic.getImageData(0, 0, tw, th).data, md = mc.getImageData(0, 0, tw, th).data;
+  const { msk, soft } = prepMask(maskCanvas, { cx0, cy0, cw, ch, tw, th, pad }, staticMask);
+  const id = ic.getImageData(0, 0, tw, th).data;
   const n = tw * th;
-  const img = new Uint8Array(3 * n), msk = new Uint8Array(n);
+  const img = new Uint8Array(3 * n);
   for (let i = 0; i < n; i++) {
+    if (msk[i] === 0) continue; // 要補的洞維持 0
     img[i] = id[i * 4]; img[n + i] = id[i * 4 + 1]; img[2 * n + i] = id[i * 4 + 2];
-    msk[i] = md[i * 4 + 3] > 8 ? 0 : 255; // MI-GAN：0 = 要補的洞，255 = 已知
-    if (msk[i] === 0) { img[i] = img[n + i] = img[2 * n + i] = 0; }
   }
   abortCheck(signal);
   onProgress?.(0.3, 'MI-GAN 生成中…');
@@ -249,9 +267,6 @@ export async function inpaint(src, maskCanvas, { signal, onProgress, box } = {})
   fc.imageSmoothingQuality = 'high';
   fc.drawImage(pC, 0, 0, cw, ch);
   fc.globalCompositeOperation = 'destination-in';
-  const soft = mk(cw, ch), sc = soft.getContext('2d');
-  sc.filter = 'blur(1.5px)';
-  sc.drawImage(maskCanvas, cx0, cy0, cw, ch, 0, 0, cw, ch);
   fc.drawImage(soft, 0, 0);
   const res = mk(W, H), rc = res.getContext('2d');
   rc.drawImage(src, 0, 0);

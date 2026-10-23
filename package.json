@@ -7,10 +7,10 @@
   "scripts": {
     "test": "npm run test:unit && npm run test:node",
     "test:unit": "vitest run",
-    "test:node": "node --test tests/video.test.mjs tests/ai.test.mjs",
+    "test:node": "node --test tests/video.test.mjs tests/ai.test.mjs tests/comfy.test.mjs",
     "test:browser": "node tests/browser/run.mjs",
     "test:watch": "vitest",
-    "check": "node --check js/core.js && node --check js/ai.js && node --check js/video.js && node --check js/tools-video.js && node --check js/tools-image.js && node --check js/main.js"
+    "check": "node --check js/core.js && node --check js/ai.js && node --check js/video.js && node --check js/comfy.js && node --check js/tools-video.js && node --check js/tools-image.js && node --check js/main.js"
   },
   "devDependencies": {
     "jsdom": "^25.0.1",

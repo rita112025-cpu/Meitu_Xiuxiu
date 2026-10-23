@@ -41,6 +41,20 @@ python serve.py 8080
 
 然後用最新版 Chrome / Edge 開 http://localhost:8080 。建議有 WebGPU（沒有時自動退回 CPU，會很慢）。
 
+## 選用：用本機 ComfyUI 加速影片放大
+
+有 NVIDIA 顯示卡並已安裝 [ComfyUI](https://github.com/comfyanonymous/ComfyUI) 時，「影片放大」可以改由本機 ComfyUI 處理整段影片（解碼、放大、合成都在 CUDA 上，保留聲音），通常比瀏覽器逐格處理快很多。
+
+1. ComfyUI 安裝 [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) 節點。
+2. 把放大模型（例如 `RealESRGAN_x4plus.pth`）放進 ComfyUI 的 `models/upscale_models/`。
+3. 啟動 ComfyUI（預設 `127.0.0.1:8188`），再用 `python serve.py` 開啟本頁。
+4. 在「影片放大」的「運算位置」選「本機 ComfyUI」，並選擇放大模型。
+
+- 頁面透過 `serve.py` 的 `/comfy/` 同源代理呼叫 ComfyUI，不需要開 ComfyUI 的 CORS。代理只轉送必要的 API，並拒絕其他網站發出的請求。ComfyUI 不在預設位置時，可用環境變數 `XIUXIU_COMFY` 指定，例如 `http://127.0.0.1:8189`。
+- 影片只在本機的瀏覽器與 ComfyUI 之間傳遞，不會上傳到外部；上傳的影片與輸出的結果會留在 ComfyUI 的 `input/`、`output/xiuxiu/` 資料夾，需要時請自行清理。
+- 長影片會依輸出尺寸分批處理（VideoHelperSuite Meta Batch），避免一次把所有影格放進記憶體。
+- 偵測不到 ComfyUI、缺少 VideoHelperSuite 或沒有放大模型時，該選項會停用並說明原因，影片放大照常使用瀏覽器運算。
+
 ## 使用方式
 
 - 從「新增」載入檔案，也可拖曳檔案或貼上圖片。
@@ -55,7 +69,7 @@ python serve.py 8080
 
 - AI 效能取決於裝置、GPU 與瀏覽器支援；CPU 模式可能很慢。
 - 影片輸出需要 WebCodecs；來源音訊無法解碼或編碼時，輸出可能沒有聲音。
-- 長影片與高解析度輸出仍可能耗用大量 RAM：目前會先收集編碼後的影音 chunks，最後才封裝。
+- 長影片與高解析度輸出仍可能耗用大量 RAM：編碼後的影音會直接寫入封裝器，但完整檔案仍在記憶體中組成後才下載。
 - 透明 WebM 使用自製 VP9 Alpha 封裝，其他播放器的相容性尚未完整驗證。
 
 ## 本次穩定性修正
@@ -78,7 +92,7 @@ python serve.py 8080
 
 ## 已知限制（穩定性審查）
 
-- **記憶體（P1）**：影片輸出會先把所有編碼後的影音 chunk 收集在記憶體中，最後才封裝。長影片或高解析度輸出會占用大量 RAM，建議在工作管理員觀察用量。
+- **記憶體（P1）**：編碼後的影音 chunk 會直接寫入封裝器，不再另外保留一份，峰值較以前低；但輸出檔仍完整存在記憶體中（尚未改為邊處理邊寫入磁碟），長影片或高解析度輸出仍會占用大量 RAM。
 - **模型退回（P3）**：RVM 影片摳圖無法載入時會改用 U²-Net 輕量模型，畫面會以提示告知；輕量模型的邊緣品質可能較低。
 - **音訊判斷（P4）**：來源音訊無法解碼與來源沒有音軌，目前都會顯示「來源沒有可解碼的聲音」，兩者無法區分。
 - **模型來源（P2）**：模型網址已固定為 Hugging Face 的 commit SHA，並已確認八個檔案在各自 SHA 下可取得。但沒有 SHA-256 校驗，也不保證上游 repo 永遠可用；repo 被刪除、改名或改為私有時，下載仍會失敗。
@@ -90,5 +104,6 @@ python serve.py 8080
 - `js/ai.js` onnxruntime-web 推論（MI-GAN、U²-Net、Real-ESRGAN 分塊、RVM）
 - `js/tools-image.js` 新增 / 調整 / 文字 / 消除圖 / 摳圖 / 變清晰 / 調色
 - `js/tools-video.js`、`js/video.js` 影片去水印 / 去背 / 放大（WebCodecs 逐格編碼，保留聲音；透明 WebM 為自製 VP9 alpha 封裝）
-- `js/canvas.js` 共用的畫布建立與取消檢查
-- `serve.py` 本機伺服器（檔案白名單 + 跨來源隔離標頭）
+- `js/comfy.js` 選用的本機 ComfyUI 後端（偵測、影片放大工作流程、分批排程、取消）
+- `js/canvas.js` 共用的畫布建立、逐格重複使用的畫布池與取消檢查
+- `serve.py` 本機伺服器（檔案白名單 + 跨來源隔離標頭 + `/comfy/` 同源代理）

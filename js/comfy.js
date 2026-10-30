@@ -157,9 +157,12 @@ export async function upscaleVideo({ file, model, fps, outW, outH, format, frame
   const wf = buildUpscaleWorkflow({ video, model, fps, outW, outH, format, framesPerBatch: fpb, job });
   const onBatch = (n) => onProgress?.(Math.min(0.95, n / batches), `ComfyUI 放大中：第 ${Math.min(n + 1, batches)} / ${batches} 批`);
   onBatch(0);
-  await api('/prompt', { method: 'POST', json: { prompt: wf }, signal });
   let g;
-  try { g = await waitJob(job, { signal, onBatch }); }
+  try {
+    // 提交後端後、收到回應前也可能取消；此時仍須依 job 標記清理。
+    await api('/prompt', { method: 'POST', json: { prompt: wf }, signal });
+    g = await waitJob(job, { signal, onBatch });
+  }
   catch (e) { if (e?.name === 'AbortError') await cancelJob(job); throw e; }
   onProgress?.(0.97, '下載結果…');
   const q = new URLSearchParams({ filename: g.filename, subfolder: g.subfolder, type: g.type });
@@ -167,3 +170,4 @@ export async function upscaleVideo({ file, model, fps, outW, outH, format, frame
   onProgress?.(1);
   return { blob: new Blob([blob], { type: f.type }), note: '由本機 ComfyUI 處理；暫存的影片會留在 ComfyUI 的 input／output 資料夾。' };
 }
+

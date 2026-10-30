@@ -158,3 +158,21 @@ test('upscaleVideo 取消時中斷執行中的本工作批次', { timeout: 5000 
     assert.deepEqual(s.deleted, []);
   });
 });
+
+
+test('後端已接受 prompt、回應尚未抵達時取消，仍會清理本工作', async () => {
+  const ac = new AbortController();
+  const { s, routes } = fakeComfy({ batches: 5 });
+  const submit = routes[1][2];
+  routes[1][2] = (url, init) => {
+    submit(url, init); // 後端已將工作排入佇列
+    ac.abort();
+    throw new DOMException('Aborted while awaiting prompt response', 'AbortError');
+  };
+  await withFetch(routes, async () => {
+    s.queue.push([0, 'foreign-running', { 1: { inputs: { job: 'someone-else' } } }, {}, []]);
+    await assert.rejects(run({ signal: ac.signal }), { name: 'AbortError' });
+    assert.deepEqual(s.deleted, ['p0']);
+    assert.deepEqual(s.interrupted, [], '不可影響其他工作');
+  });
+});

@@ -1,6 +1,6 @@
 import { S, $, $$, toast, fit, render, setImage, fileToCanvas, refreshHist } from './core.js';
 import { tools } from './tools-image.js';
-import { vtools, loadVideoFile, hasVideo } from './tools-video.js';
+import { vtools, loadVideoFile, hasVideo, stopPlay } from './tools-video.js';
 import { detectGPU } from './ai.js';
 
 const ICONS = {
@@ -54,6 +54,7 @@ export function selectTool(id) {
 
 function setMode(m) {
   if (S.mode === m) return;
+  stopPlay();
   S.tool?.leave?.(); S.tool = null;
   store[S.mode] = { doc: S.doc, orig: S.orig, hist: S.hist, redo: S.redo, view: S.view };
   Object.assign(S, store[m] || { doc: null, orig: null, hist: [], redo: [], view: { s: 1, x: 0, y: 0 } }, { compare: null, preview: null, mode: m });
@@ -100,3 +101,4 @@ $('#panel').addEventListener('input', (e) => {
 });
 
 buildToolbar(); selectTool('new');
+

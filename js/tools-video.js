@@ -20,7 +20,7 @@ const fitTo = (c, w, h, pool) => {
 };
 
 // ---------- 載入與時間軸 ----------
-let playing = false;
+let playing = false, playId = 0, frameRequest = null;
 export async function loadVideoFile(file) {
   stopPlay();
   const v = await VD.loadVideo(file);
@@ -37,20 +37,39 @@ function drawFrame() {
   S.preview = null; S.compare = null; refreshHist(); render();
 }
 function updTime() { $('#tlTime').textContent = `${fmtT(V?.video.currentTime || 0)} / ${fmtT(V?.dur || 0)}`; }
-async function gotoT(t) { await VD.seek(V.video, t); drawFrame(); updTime(); }
-function stopPlay() { playing = false; V?.video.pause(); const b = $('#tlPlay'); if (b) b.textContent = '▶'; }
+async function gotoT(t) {
+  const source = V, doc = S.doc;
+  await VD.seek(source.video, t);
+  if (S.mode !== 'video' || V !== source || S.doc !== doc) return;
+  drawFrame(); updTime();
+}
+export function stopPlay() {
+  playing = false; playId++;
+  if (frameRequest != null) V?.video.cancelVideoFrameCallback(frameRequest);
+  frameRequest = null;
+  V?.video.pause();
+  const b = $('#tlPlay'); if (b) b.textContent = '▶';
+}
 function startPlay() {
-  if (!V) return; playing = true; $('#tlPlay').textContent = '⏸'; V.video.muted = false; V.video.play();
+  if (!V || S.mode !== 'video') return;
+  const source = V, doc = S.doc, id = ++playId;
+  playing = true; $('#tlPlay').textContent = '⏸'; source.video.muted = false;
+  source.video.play().catch((e) => {
+    if (id !== playId) return;
+    stopPlay(); toast('無法播放影片：' + e.message, true);
+  });
   const tick = () => {
-    if (!playing) return;
-    drawFrame(); $('#tlRange').value = (V.video.currentTime / V.dur) * 1000; updTime();
-    if (V.video.ended) return stopPlay();
-    V.video.requestVideoFrameCallback(tick);
+    if (!playing || id !== playId) return;
+    frameRequest = null;
+    if (S.mode !== 'video' || V !== source || S.doc !== doc) return stopPlay();
+    drawFrame(); $('#tlRange').value = (source.video.currentTime / source.dur) * 1000; updTime();
+    if (source.video.ended) return stopPlay();
+    frameRequest = source.video.requestVideoFrameCallback(tick);
   };
-  V.video.requestVideoFrameCallback(tick);
+  frameRequest = source.video.requestVideoFrameCallback(tick);
 }
 $('#tlPlay').onclick = () => (playing ? stopPlay() : startPlay());
-$('#tlRange').oninput = () => { if (!V) return; stopPlay(); gotoT((val('tlRange') / 1000) * V.dur); };
+$('#tlRange').oninput = () => { if (!V) return; stopPlay(); gotoT((val('tlRange') / 1000) * V.dur).catch((e) => toast(e.message, true)); };
 export const hasVideo = () => !!V;
 
 // ---------- 共用：輸出區塊 ----------
@@ -144,12 +163,14 @@ vtools.vwm = (() => {
       $('#wList').onclick = (e) => { const b = e.target.closest('button'); if (b) { rects.splice(+b.dataset.i, 1); listHtml(); render(); } };
       $('#wPrev').onclick = async () => {
         if (!needVideo() || !rects.length) return toast('請先框選水印位置', true);
+        stopPlay();
         const before = clone(S.doc), ms = masks();
         const r = await runJob('生成中', ({ signal, progress }) => fill(before, ms, { signal, onProgress: progress }).then((x) => (progress(1), x)));
         if (r) { S.preview = r; setCompare(before); }
       };
       $('#wGo').onclick = async () => {
         if (!needVideo()) return; if (!rects.length) return toast('請先框選水印位置', true);
+        stopPlay();
         const fmt = $('#wFmt').value, name = 'xiuxiu-去水印.' + fmt, dest = await saveTarget('w', name, fmt);
         if (!dest) return;
         const ms = masks(), fps = pickFps('w'), ow = even(V.w), oh = even(V.h), pool = canvasPool();
@@ -192,7 +213,7 @@ vtools.vmatte = (() => {
       const sync = () => { const tr = $('#mBg').value === 'transparent'; if (tr) $('#mFmt').value = 'webm'; $('#mFmt').querySelector('[value=mp4]').disabled = tr; };
       $('#mBg').onchange = sync; sync();
       $('#mPrev').onclick = async () => {
-        if (!needVideo()) return; const before = clone(S.doc), { bg, color } = bgOf();
+        if (!needVideo()) return; stopPlay(); const before = clone(S.doc), { bg, color } = bgOf();
         const r = await runJob('生成中', async ({ signal, progress }) => {
           const m = await AI.createVideoMatter({ signal, onProgress: progress });
           await m.step(before); const a = await m.step(before); // 先暖機一次，讓記憶生效
@@ -201,7 +222,7 @@ vtools.vmatte = (() => {
         if (r) { S.preview = r; setCompare(before); }
       };
       $('#mGo').onclick = async () => {
-        if (!needVideo()) return; const { bg, color } = bgOf(), stab = $('#mStab').checked, fps = pickFps('m'), ow = even(V.w), oh = even(V.h), fmt = $('#mFmt').value, alpha = bg === 'transparent';
+        if (!needVideo()) return; stopPlay(); const { bg, color } = bgOf(), stab = $('#mStab').checked, fps = pickFps('m'), ow = even(V.w), oh = even(V.h), fmt = $('#mFmt').value, alpha = bg === 'transparent';
         const name = 'xiuxiu-去背.' + fmt, dest = await saveTarget('m', name, fmt);
         if (!dest) return;
         const r = await runJob('生成中', async ({ signal, progress }) => {
@@ -278,7 +299,7 @@ vtools.vup = (() => {
       info();
       detectComfy();
       $('#uGo').onclick = async () => {
-        if (!needVideo()) return; const d = dims(), m = $('input[name=um]:checked').value, modelKey = m === 'std' ? (d.f <= 2 ? 'std2' : 'std4') : m, fmt = $('#uFmt').value, fps = pickFps('u');
+        if (!needVideo()) return; stopPlay(); const d = dims(), m = $('input[name=um]:checked').value, modelKey = m === 'std' ? (d.f <= 2 ? 'std2' : 'std4') : m, fmt = $('#uFmt').value, fps = pickFps('u');
         const comfy = useComfy(), comfyModel = $('#uComfyModel').value, pool = canvasPool();
         const name = `xiuxiu-放大${d.w}x${d.h}.${fmt}`, dest = comfy ? { handle: null } : await saveTarget('u', name, fmt);
         if (!dest) return;
@@ -301,7 +322,9 @@ vtools.vup = (() => {
 })();
 
 addEventListener('pagehide', () => {
+  stopPlay();
   for (const url of resultUrls.values()) URL.revokeObjectURL(url);
   resultUrls.clear();
   if (V?.url) URL.revokeObjectURL(V.url);
 });
+
